@@ -7,7 +7,8 @@ import {
   ShoppingCart, Plus, Minus, Trash2, LogOut, Search, 
   Check, Wifi, WifiOff, X, Key, Settings, QrCode, 
   Coins, TrendingUp, Grid, RefreshCw, Smartphone, 
-  User, Database, Calendar, Briefcase, PlusCircle 
+  User, Database, Calendar, Briefcase, PlusCircle,
+  Edit, Save, Download, UserPlus, MapPin, AlertTriangle, FileSpreadsheet, Lock
 } from 'lucide-react';
 
 // --- TYPES ---
@@ -29,6 +30,36 @@ interface Order {
   cash_received?: number;
   change_given?: number;
   cashier_role: string;
+  created_at: string;
+  cashier_name?: string;
+  branch?: string;
+}
+
+interface PosUser {
+  id?: number;
+  username: string;
+  password?: string;
+  role: 'admin' | 'cashier';
+  created_at?: string;
+}
+
+interface Shift {
+  id?: number;
+  cashier_name: string;
+  branch: string;
+  beginning_balance: number;
+  total_sales: number;
+  login_time: string;
+  logout_time?: string;
+  created_at?: string;
+}
+
+interface Expense {
+  id?: number;
+  product_name: string;
+  cost: number;
+  cashier_name: string;
+  branch: string;
   created_at: string;
 }
 
@@ -82,9 +113,50 @@ const playSound = (type: 'beep' | 'success' | 'click' | 'error' | 'bell') => {
 export default function BossRicePOS() {
   // --- AUTH STATES ---
   const [currentRole, setCurrentRole] = useState<'admin' | 'cashier' | null>(null);
+  const [currentUser, setCurrentUser] = useState<PosUser | null>(null);
   const [selectedRole, setSelectedRole] = useState<'admin' | 'cashier'>('admin');
+  const [selectedUsername, setSelectedUsername] = useState<string>(''); // selected name from loaded users
   const [enteredPin, setEnteredPin] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
+  
+  // --- USER/AUTHENTICATION DIRECTORY ---
+  const [users, setUsers] = useState<PosUser[]>([]);
+  const [tempUser, setTempUser] = useState<PosUser | null>(null); // assigned during login but before shift setup
+  const [myActiveShift, setMyActiveShift] = useState<Shift | null>(null);
+  const [isShiftOverlayOpen, setIsShiftOverlayOpen] = useState(false);
+  const [shiftBegBalance, setShiftBegBalance] = useState<string>('1000');
+  const [shiftBranch, setShiftBranch] = useState<string>('Main Branch');
+  const [customBranchText, setCustomBranchText] = useState<string>('');
+
+  // --- STAFFING MANAGEMENT ---
+  const [newStaffUsername, setNewStaffUsername] = useState('');
+  const [newStaffPassword, setNewStaffPassword] = useState('');
+  const [newStaffRole, setNewStaffRole] = useState<'admin' | 'cashier'>('cashier');
+  const [passwordChangeUser, setPasswordChangeUser] = useState('');
+  const [passwordChangeNew, setPasswordChangeNew] = useState('');
+
+  // --- EXPENSES SYSTEM ---
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [newExpenseName, setNewExpenseName] = useState('');
+  const [newExpenseCost, setNewExpenseCost] = useState('');
+
+  // --- GLOBAL SHIFTS & STATIONS LEDGER ---
+  const [shifts, setShifts] = useState<Shift[]>([]);
+
+  // --- DAILY REPORT EXPORTS ---
+  const [selectedReportDate, setSelectedReportDate] = useState<string>(
+    new Date().toLocaleDateString('sv').substring(0, 10) // local YYYY-MM-DD
+  );
+
+  // --- VOID ORDER AUTHORIZATION ---
+  const [isVoidAuthOpen, setIsVoidAuthOpen] = useState(false);
+  const [orderToVoid, setOrderToVoid] = useState<Order | null>(null);
+  const [adminVoidPin, setAdminVoidPin] = useState<string>('');
+  const [voidAuthError, setVoidAuthError] = useState<string>('');
+
+  // --- PRODUCT IN-LINE PRICE EDITING ---
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [editingProductPrice, setEditingProductPrice] = useState<string>('');
 
   // --- Core POS STATE ---
   const [products, setProducts] = useState<Product[]>([]);
@@ -98,7 +170,7 @@ export default function BossRicePOS() {
   const [isInitializing, setIsInitializing] = useState(true);
 
   // --- ACTIVE VIEWS / TAB ---
-  const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift'>('pos');
+  const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift' | 'staff' | 'shifts' | 'expenses'>('pos');
   const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
 
   // --- NOTIFICATION / TOAST ---
@@ -249,20 +321,107 @@ export default function BossRicePOS() {
     }
   };
 
+  // --- SYNC STAFF USERS DIRECTORY ---
+  const syncUsers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('pos_users')
+        .select('*')
+        .order('role', { ascending: true })
+        .order('username', { ascending: true });
+
+      if (error) throw error;
+      const validUsers = data || [];
+      if (validUsers.length === 0) {
+        const fallbacks: PosUser[] = [
+          { username: 'admin', password: '1234', role: 'admin' },
+          { username: 'cashier', password: '5678', role: 'cashier' }
+        ];
+        setUsers(fallbacks);
+        localStorage.setItem('br_users_cached', JSON.stringify(fallbacks));
+      } else {
+        setUsers(validUsers);
+        localStorage.setItem('br_users_cached', JSON.stringify(validUsers));
+      }
+    } catch (e) {
+      console.warn('Sync users failed, running offline fallback');
+      const cached = localStorage.getItem('br_users_cached');
+      if (cached) {
+        setUsers(JSON.parse(cached));
+      } else {
+        setUsers([
+          { username: 'admin', password: '1234', role: 'admin' },
+          { username: 'cashier', password: '5678', role: 'cashier' }
+        ]);
+      }
+    }
+  };
+
+  // --- SYNC GLOBAL SHIFTS LOGS ---
+  const syncShifts = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('pos_shifts')
+        .select('*')
+        .order('login_time', { ascending: false });
+
+      if (error) throw error;
+      setShifts(data || []);
+      localStorage.setItem('br_shifts_cached', JSON.stringify(data || []));
+    } catch (e) {
+      console.warn('Sync shifts failed, loading cache');
+      const cached = localStorage.getItem('br_shifts_cached');
+      if (cached) setShifts(JSON.parse(cached));
+    }
+  };
+
+  // --- SYNC EXPENSE HISTORY LEDGER ---
+  const syncExpenses = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('pos_expenses')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setExpenses(data || []);
+      localStorage.setItem('br_expenses_cached', JSON.stringify(data || []));
+    } catch (e) {
+      console.warn('Sync expenses failed, loading cache');
+      const cached = localStorage.getItem('br_expenses_cached');
+      if (cached) setExpenses(JSON.parse(cached));
+    }
+  };
+
   // --- RETRIEVE CACHED SESSION ON LOAD ---
   useEffect(() => {
-    bootstrapPOS();
-    const session = localStorage.getItem('br_session_v1');
-    if (session) {
-      const parsed = JSON.parse(session);
-      setCurrentRole(parsed.role);
-    }
+    const initTask = () => {
+      bootstrapPOS();
+      syncUsers();
+      syncShifts();
+      syncExpenses();
+      const session = localStorage.getItem('br_session_v1');
+      if (session) {
+        const parsed = JSON.parse(session);
+        setCurrentRole(parsed.role);
+        setCurrentUser(parsed.user || null);
+        if (parsed.shift) {
+          setMyActiveShift(parsed.shift);
+        }
+      }
+    };
+    setTimeout(initTask, 0);
   }, [defaultProducts]);
 
-  // Sync historical orders on report views
+  // Sync historical orders/shifts on report views
   useEffect(() => {
     if (currentRole) {
-      syncOrders(reportPeriod);
+      const syncTask = () => {
+        syncOrders(reportPeriod);
+        syncShifts();
+        syncExpenses();
+      };
+      setTimeout(syncTask, 0);
     }
   }, [currentRole, reportPeriod]);
 
@@ -304,17 +463,38 @@ export default function BossRicePOS() {
   };
 
   const attemptLogin = () => {
-    const pinsMap = { admin: '1234', cashier: '5678' };
-    if (enteredPin === pinsMap[selectedRole]) {
+    // Authenticate user against dynamic loaded directory
+    const matchedUser = users.find(u => 
+      u.role === selectedRole && 
+      (selectedUsername ? u.username === selectedUsername : u.username.toLowerCase() === selectedRole) &&
+      u.password === enteredPin
+    );
+
+    if (matchedUser) {
       if (audioEnabled) playSound('success');
-      setCurrentRole(selectedRole);
-      localStorage.setItem('br_session_v1', JSON.stringify({ role: selectedRole, time: Date.now() }));
-      setEnteredPin('');
       setLoginError('');
-      setActiveTab('pos');
+      setEnteredPin('');
+
+      if (matchedUser.role === 'cashier') {
+        // Trigger cashier register opening parameters modal setup
+        setTempUser(matchedUser);
+        setShiftBegBalance('1000');
+        setShiftBranch('Main Branch');
+        setCustomBranchText('');
+        setIsShiftOverlayOpen(true);
+      } else {
+        setCurrentUser(matchedUser);
+        setCurrentRole('admin');
+        localStorage.setItem('br_session_v1', JSON.stringify({ 
+          role: 'admin', 
+          user: matchedUser, 
+          time: Date.now() 
+        }));
+        setActiveTab('pos');
+      }
     } else {
       if (audioEnabled) playSound('error');
-      setLoginError('Incorrect PIN. Please try again.');
+      setLoginError('Incorrect PIN / credentials. Please check your account PIN.');
       setEnteredPin('');
     }
   };
@@ -322,8 +502,357 @@ export default function BossRicePOS() {
   const attemptLogout = () => {
     handleTactileClick();
     localStorage.removeItem('br_session_v1');
+    localStorage.removeItem('br_active_shift');
     setCurrentRole(null);
+    setCurrentUser(null);
+    setMyActiveShift(null);
+    setTempUser(null);
     setCart({});
+  };
+
+  // --- SHIFT CREATION ACTIVATOR ---
+  const startShift = async () => {
+    if (!tempUser) return;
+    const begBal = parseFloat(shiftBegBalance || '0');
+    if (isNaN(begBal) || begBal < 0) {
+      showNotification('Please enter a valid beginning balance.');
+      return;
+    }
+
+    const assignedBranch = shiftBranch === 'Custom...' ? customBranchText : shiftBranch;
+    const finalBranch = assignedBranch.trim() || 'Main Branch';
+
+    const newShiftRecord: Shift = {
+      cashier_name: tempUser.username,
+      branch: finalBranch,
+      beginning_balance: begBal,
+      total_sales: 0,
+      login_time: new Date().toISOString()
+    };
+
+    setSyncStatus('syncing');
+    try {
+      const { data, error } = await supabase
+        .from('pos_shifts')
+        .insert([newShiftRecord])
+        .select()
+        .single();
+
+      if (error) throw error;
+      const savedShift = data || newShiftRecord;
+      setCurrentUser(tempUser);
+      setCurrentRole('cashier');
+      setMyActiveShift(savedShift);
+      setIsShiftOverlayOpen(false);
+      setTempUser(null);
+
+      localStorage.setItem('br_active_shift', JSON.stringify(savedShift));
+      localStorage.setItem('br_session_v1', JSON.stringify({ 
+        role: 'cashier', 
+        user: tempUser, 
+        shift: savedShift,
+        time: Date.now() 
+      }));
+
+      showNotification(`Shift register opened at ${finalBranch}!`);
+      if (audioEnabled) playSound('success');
+      syncShifts();
+    } catch (e) {
+      console.warn('DB Shift log failed, proceeding with local fallback: ', e);
+      setCurrentUser(tempUser);
+      setCurrentRole('cashier');
+      setMyActiveShift(newShiftRecord);
+      setIsShiftOverlayOpen(false);
+      setTempUser(null);
+
+      localStorage.setItem('br_active_shift', JSON.stringify(newShiftRecord));
+      localStorage.setItem('br_session_v1', JSON.stringify({ 
+        role: 'cashier', 
+        user: tempUser, 
+        shift: newShiftRecord,
+        time: Date.now() 
+      }));
+
+      showNotification(`Opened local shift offline at ${finalBranch}`);
+    }
+  };
+
+  // --- RECORD DELETE OPERATIONS ---
+  const deleteOrder = async (orderId?: number, orderNum?: number) => {
+    if (!orderId) {
+      showNotification('Unable to delete offline item draft.');
+      return;
+    }
+    setConfirmDialog({
+      show: true,
+      title: '🗑️ Delete Order Record?',
+      msg: `Are you absolutely certain you want to erase order #${orderNum} from historical reports? This action is permanent.`,
+      onConfirm: async () => {
+        setSyncStatus('syncing');
+        try {
+          const { error } = await supabase.from('orders').delete().eq('id', orderId);
+          if (error) throw error;
+          showNotification(`Order #${orderNum} deleted successfully.`);
+          syncOrders(reportPeriod);
+        } catch (e) {
+          console.error(e);
+          showNotification('Error deleting record in offline mode.');
+          setAllOrders(prev => prev.filter(o => o.id !== orderId));
+        }
+        setConfirmDialog({ show: false, title: '', msg: '', onConfirm: () => {} });
+      }
+    });
+  };
+
+  // --- REPORT EXPORT ENGINE (CSV) ---
+  const handleExportCSV = (targetDate: string) => {
+    const dailySubset = allOrders.filter(o => {
+      const parts = o.created_at.split('T');
+      return parts[0] === targetDate;
+    });
+
+    if (dailySubset.length === 0) {
+      showNotification(`No completed orders logged on ${targetDate} to export.`);
+      return;
+    }
+
+    // Build standard high-quality CSV
+    let csvStr = "\uFEFF"; // Byte-order mark for Excel compatibility
+    csvStr += `"BOSS RICE DAILY SALES REPORT"\n`;
+    csvStr += `"Selected Date:","${targetDate}"\n`;
+    csvStr += `"Generated Time:","${new Date().toLocaleTimeString('en-PH')}"\n\n`;
+    
+    csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Total Val (PHP)","Cash Received","Change Returned","Payment Channel"\n`;
+    
+    let sumTotalSales = 0;
+    dailySubset.forEach(o => {
+      const rawText = o.items.join('; ').replace(/"/g, '""');
+      const timeString = new Date(o.created_at).toLocaleTimeString('en-PH', { hour12: false });
+      csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}",${o.total},${o.cash_received || 0},${o.change_given || 0},"${o.payment_method}"\n`;
+      sumTotalSales += o.total;
+    });
+
+    csvStr += `\n"SUMMARY METRICS"\n`;
+    csvStr += `"Total Volume Count:",${dailySubset.length}\n`;
+    csvStr += `"Gross Operational Revenues PHP:",${sumTotalSales}\n`;
+
+    // Dynamic click triggers browser downloader
+    const blobObj = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
+    const localUrl = URL.createObjectURL(blobObj);
+    const hiddenLink = document.createElement("a");
+    hiddenLink.setAttribute("href", localUrl);
+    hiddenLink.setAttribute("download", `Boss_Rice_Sales_Report_${targetDate}.csv`);
+    document.body.appendChild(hiddenLink);
+    hiddenLink.click();
+    document.body.removeChild(hiddenLink);
+
+    showNotification(`Sales spreadsheet for ${targetDate} exported!`);
+    if (audioEnabled) playSound('success');
+  };
+
+  // --- PRODUCT MANAGEMENT PRICE EDITOR ---
+  const handleUpdateProductPrice = async (pId: number) => {
+    const rawVal = parseFloat(editingProductPrice);
+    if (isNaN(rawVal) || rawVal <= 0) {
+      showNotification('Please enter a valid price greater than ₱0');
+      return;
+    }
+
+    setSyncStatus('syncing');
+    try {
+      const { error } = await supabase
+        .from('products')
+        .update({ price: rawVal })
+        .eq('id', pId);
+
+      if (error) throw error;
+      setProducts(prev => prev.map(p => p.id === pId ? { ...p, price: rawVal } : p));
+      setEditingProductId(null);
+      setEditingProductPrice('');
+      setSyncStatus('online');
+      showNotification('Menu price saved successfully!');
+      if (audioEnabled) playSound('success');
+    } catch (e) {
+      console.warn("DB price edit failed, applying locally: ", e);
+      setProducts(prev => prev.map(p => p.id === pId ? { ...p, price: rawVal } : p));
+      setEditingProductId(null);
+      setEditingProductPrice('');
+      setSyncStatus('offline');
+      showNotification('Price modified locally (offline)');
+    }
+  };
+
+  // --- STAFF CREDENTIALS AND AUTH MANAGEMENT ---
+  const handleAddStaffUser = async () => {
+    const userVal = newStaffUsername.trim().toLowerCase();
+    const pinVal = newStaffPassword.trim();
+    if (!userVal || !pinVal) {
+      showNotification('Please fill in both Staff Username and Login PIN.');
+      return;
+    }
+
+    const payload: PosUser = {
+      username: userVal,
+      password: pinVal,
+      role: newStaffRole
+    };
+
+    setSyncStatus('syncing');
+    try {
+      const { data, error } = await supabase.from('pos_users').insert([payload]).select();
+      if (error) throw error;
+      showNotification(`Registered ${newStaffRole} account: "${userVal}"`);
+      setNewStaffUsername('');
+      setNewStaffPassword('');
+      syncUsers();
+      if (audioEnabled) playSound('success');
+    } catch (e) {
+      console.error(e);
+      // fallback locally
+      const updatedLocalUsers = [...users, payload];
+      setUsers(updatedLocalUsers);
+      localStorage.setItem('br_users_cached', JSON.stringify(updatedLocalUsers));
+      showNotification('Account updated locally (Offline fallback)');
+      setNewStaffUsername('');
+      setNewStaffPassword('');
+    }
+  };
+
+  const handleChangeStaffPassword = async () => {
+    const selUser = passwordChangeUser;
+    const pinVal = passwordChangeNew.trim();
+    if (!selUser || !pinVal) {
+      showNotification('Please select user account and input a new PIN code');
+      return;
+    }
+
+    setSyncStatus('syncing');
+    try {
+      const { error } = await supabase
+        .from('pos_users')
+        .update({ password: pinVal })
+        .eq('username', selUser);
+
+      if (error) throw error;
+      showNotification(`PIN updated for "${selUser}"`);
+      setPasswordChangeUser('');
+      setPasswordChangeNew('');
+      syncUsers();
+      if (audioEnabled) playSound('success');
+    } catch (e) {
+      console.error(e);
+      // update cached list locally
+      const updatedLocalUsers = users.map(u => u.username === selUser ? { ...u, password: pinVal } : u);
+      setUsers(updatedLocalUsers);
+      localStorage.setItem('br_users_cached', JSON.stringify(updatedLocalUsers));
+      showNotification('Updated password caching offline');
+      setPasswordChangeUser('');
+      setPasswordChangeNew('');
+    }
+  };
+
+  // --- EXPENSE REGISTER ACTION ---
+  const handleAddExpense = async () => {
+    const expItemName = newExpenseName.trim();
+    const expCostValue = parseFloat(newExpenseCost);
+    if (!expItemName || isNaN(expCostValue) || expCostValue <= 0) {
+      showNotification('Please enter a valid product name and cost.');
+      return;
+    }
+
+    const cashierName = currentUser?.username || 'cashier';
+    const branchName = myActiveShift?.branch || 'Main Branch';
+
+    const expensePayload: Expense = {
+      product_name: expItemName,
+      cost: expCostValue,
+      cashier_name: cashierName,
+      branch: branchName,
+      created_at: new Date().toISOString()
+    };
+
+    setSyncStatus('syncing');
+    try {
+      const { data, error } = await supabase.from('pos_expenses').insert([expensePayload]).select();
+      if (error) throw error;
+      
+      setNewExpenseName('');
+      setNewExpenseCost('');
+      showNotification(`Expense logged successfully: ₱${expCostValue}`);
+      syncExpenses();
+      if (audioEnabled) playSound('bell');
+    } catch (e) {
+      console.error("DB expense post failed, logging offline: ", e);
+      const updatedExpenses = [expensePayload, ...expenses];
+      setExpenses(updatedExpenses);
+      localStorage.setItem('br_expenses_cached', JSON.stringify(updatedExpenses));
+      setNewExpenseName('');
+      setNewExpenseCost('');
+      showNotification(`Expense logged locally (Offline mode)`);
+    }
+  };
+
+  // --- ADATIVE ORDER VOID VERIFICATIONS ---
+  const triggerVoidRequest = (ord: Order) => {
+    setOrderToVoid(ord);
+    setAdminVoidPin('');
+    setVoidAuthError('');
+    setIsVoidAuthOpen(true);
+    handleTactileClick();
+  };
+
+  const handleAuthorizeVoid = async () => {
+    if (!orderToVoid) return;
+    const adminCheck = users.find(u => u.role === 'admin' && u.password === adminVoidPin);
+    if (!adminCheck) {
+      if (audioEnabled) playSound('error');
+      setVoidAuthError('Authorization Failed: Invalid Admin PIN');
+      setAdminVoidPin('');
+      return;
+    }
+
+    // Auth succeeded! Execute void deletion sequence
+    setSyncStatus('syncing');
+    try {
+      if (orderToVoid.id) {
+        const { error } = await supabase.from('orders').delete().eq('id', orderToVoid.id);
+        if (error) throw error;
+      }
+
+      // Readjust shift total subtractively
+      if (myActiveShift) {
+        const revisedSales = Math.max(0, (myActiveShift.total_sales || 0) - orderToVoid.total);
+        const updatedShiftRecord = { ...myActiveShift, total_sales: revisedSales };
+        setMyActiveShift(updatedShiftRecord);
+        localStorage.setItem('br_active_shift', JSON.stringify(updatedShiftRecord));
+
+        if (myActiveShift.id) {
+          await supabase.from('pos_shifts').update({ total_sales: revisedSales }).eq('id', myActiveShift.id);
+        }
+      }
+
+      showNotification(`Order #${orderToVoid.order_number} has been voided!`);
+      if (audioEnabled) playSound('bell'); // trigger clear buzzer sound
+      
+      // Close popups
+      setIsVoidAuthOpen(false);
+      setOrderToVoid(null);
+      setAdminVoidPin('');
+      setVoidAuthError('');
+      
+      // Refetch
+      syncOrders(reportPeriod);
+      syncShifts();
+    } catch (e) {
+      console.warn('DB void operation failed, falling back to local action: ', e);
+      // delete offline
+      setAllOrders(prev => prev.filter(o => o.order_number !== orderToVoid.order_number));
+      setIsVoidAuthOpen(false);
+      setOrderToVoid(null);
+      setAdminVoidPin('');
+      setVoidAuthError('');
+      showNotification('Order voided locally (No sync)');
+    }
   };
 
   // --- CART OPERATIONS ---
@@ -434,11 +963,40 @@ export default function BossRicePOS() {
       payment_method: payMethod,
       cash_received: cashInput,
       change_given: changeAmount,
-      cashier_role: currentRole || 'cashier',
+      cashier_role: `${currentUser?.username || 'cashier'} | ${myActiveShift?.branch || 'Main Branch'}`,
+      cashier_name: currentUser?.username || 'cashier',
+      branch: myActiveShift?.branch || 'Main Branch',
       created_at: new Date().toISOString()
     };
 
     if (audioEnabled) playSound('success');
+
+    // Dynamically increment shift cumulative sales balance
+    if (myActiveShift) {
+      const newTotalShiftSales = (myActiveShift.total_sales || 0) + cartTotalAmount;
+      const updatedShiftObj = { ...myActiveShift, total_sales: newTotalShiftSales };
+      setMyActiveShift(updatedShiftObj);
+      localStorage.setItem('br_active_shift', JSON.stringify(updatedShiftObj));
+      
+      // Update session storage
+      const rawSession = localStorage.getItem('br_session_v1');
+      if (rawSession) {
+        const parsed = JSON.parse(rawSession);
+        parsed.shift = updatedShiftObj;
+        localStorage.setItem('br_session_v1', JSON.stringify(parsed));
+      }
+
+      if (myActiveShift.id) {
+        supabase
+          .from('pos_shifts')
+          .update({ total_sales: newTotalShiftSales })
+          .eq('id', myActiveShift.id)
+          .then(({ error }) => {
+            if (error) console.warn('Could not increment shift total sales remote db record:', error);
+            syncShifts();
+          });
+      }
+    }
 
     try {
       const { error } = await supabase.from('orders').insert([newOrderRecord]);
@@ -698,7 +1256,7 @@ export default function BossRicePOS() {
             {/* TAB SELECTOR */}
             <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950/80 rounded-2xl mb-6 border border-zinc-800/50">
               <button 
-                onClick={() => { setSelectedRole('admin'); handleTactileClick(); }}
+                onClick={() => { setSelectedRole('admin'); setSelectedUsername(''); handleTactileClick(); }}
                 className={`py-3 rounded-xl font-display text-xs uppercase tracking-wider font-semibold transition-all ${
                   selectedRole === 'admin' 
                     ? 'bg-zinc-800 text-amber-400 shadow-inner border-b border-amber-500/20' 
@@ -708,7 +1266,7 @@ export default function BossRicePOS() {
                 👑 Manager
               </button>
               <button 
-                onClick={() => { setSelectedRole('cashier'); handleTactileClick(); }}
+                onClick={() => { setSelectedRole('cashier'); setSelectedUsername(''); handleTactileClick(); }}
                 className={`py-3 rounded-xl font-display text-xs uppercase tracking-wider font-semibold transition-all ${
                   selectedRole === 'cashier' 
                     ? 'bg-zinc-800 text-red-400 shadow-inner border-b border-red-500/25' 
@@ -717,6 +1275,25 @@ export default function BossRicePOS() {
               >
                 🧾 Cashier
               </button>
+            </div>
+
+            {/* SELECTION ACCOUNT SYSTEM */}
+            <div className="mb-6 flex flex-col gap-1">
+              <label className="text-[10px] uppercase font-display font-bold tracking-widest text-zinc-500 block mb-1">
+                Select Active Profile
+              </label>
+              <select
+                value={selectedUsername}
+                onChange={(e) => { setSelectedUsername(e.target.value); handleTactileClick(); }}
+                className="w-full bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-display font-medium text-zinc-250 hover:border-zinc-800 outline-none transition cursor-pointer"
+              >
+                <option value="">Default {selectedRole === 'admin' ? 'Admin' : 'Cashier'} Login</option>
+                {users.filter(u => u.role === selectedRole).map(u => (
+                  <option key={u.username} value={u.username}>
+                    👤 {u.username.toUpperCase()}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* PIN INPUT ELEMENT */}
@@ -772,10 +1349,18 @@ export default function BossRicePOS() {
                 <h1 className="text-xl font-display font-black tracking-tight text-white leading-none">
                   BOSS <span className="text-red-500">RICE</span>
                 </h1>
-                <p className="text-[10px] uppercase font-display tracking-widest text-zinc-500 mt-1 flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                  Terminal Station
-                </p>
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-[10px] uppercase font-display tracking-widest text-zinc-500 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    Terminal Station
+                  </p>
+                  {myActiveShift && currentRole === 'cashier' && (
+                    <span className="text-[9px] uppercase font-mono bg-red-950/40 text-red-400 border border-red-900/30 px-2 py-0.5 rounded flex items-center gap-1">
+                      <span className="inline-block w-1 h-1 rounded-full bg-red-500" />
+                      {myActiveShift.cashier_name} · {myActiveShift.branch} · Beg: ₱{myActiveShift.beginning_balance}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -842,20 +1427,20 @@ export default function BossRicePOS() {
               <section className="flex-none bg-zinc-900/50 border-b border-zinc-900/90 p-4 flex gap-2 overflow-x-auto select-none">
                 <button 
                   onClick={() => { handleTactileClick(); setActiveTab('pos'); }}
-                  className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
+                  className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                     activeTab === 'pos' 
                       ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                       : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                   }`}
                 >
-                  <Grid className="w-3.5 h-3.5" /> Ordered Grid
+                  <Grid className="w-3.5 h-3.5" /> Order Grid
                 </button>
 
                 {currentRole === 'admin' ? (
                   <>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('reports'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'reports' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
@@ -865,26 +1450,68 @@ export default function BossRicePOS() {
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('products'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 relative ${
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
                         activeTab === 'products' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <Settings className="w-3.5 h-3.5" /> Product Management
+                      <Settings className="w-3.5 h-3.5" /> Products Tab
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('shifts'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
+                        activeTab === 'shifts' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <MapPin className="w-3.5 h-3.5 text-amber-500" /> Cashier Shifts & Branches
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('staff'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'staff' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <UserPlus className="w-3.5 h-3.5 text-emerald-500" /> Staff Settings
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'expenses' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Coins className="w-3.5 h-3.5 text-red-500" /> Expenses Ledger
                     </button>
                   </>
                 ) : (
-                  <button 
-                    onClick={() => { handleTactileClick(); setActiveTab('myshift'); }}
-                    className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
-                      activeTab === 'myshift' 
-                        ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                        : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                    }`}
-                  >
-                    <Briefcase className="w-3.5 h-3.5" /> My Cashier Shift
-                  </button>
+                  <>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('myshift'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'myshift' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Briefcase className="w-3.5 h-3.5" /> My Cashier Shift
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'expenses' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Coins className="w-3.5 h-3.5 text-rose-500" /> Log Expenses
+                    </button>
+                  </>
                 )}
 
                 {/* AUDIO TOGGLE */}
@@ -1066,29 +1693,45 @@ export default function BossRicePOS() {
                                     <span className="font-semibold text-zinc-300 truncate w-4/5">#{idx+1} {b.name}</span>
                                     <span className="font-mono font-bold text-amber-500">{b.qty} sold</span>
                                   </div>
-                                  <div className="w-full h-2 bg-zinc-950 rounded-full overflow-hidden">
-                                    <div 
-                                      className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full transition-all duration-500"
-                                      style={{ width: `${ratio}%` }}
-                                    />
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
 
-                      {/* HISTORY FEED */}
+                        {/* HISTORY FEED */}
                       <div className="bg-zinc-900 border border-zinc-800/80 p-6 rounded-2xl col-span-1 lg:col-span-2">
                         <h4 className="text-xs uppercase font-display font-bold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4 flex items-center justify-between">
                           <span>📋 Shift Ledger History</span>
                           <span className="text-[9px] tracking-normal font-mono font-light text-zinc-550 lowercase italic">Order limits showing latest {analyticsData.totalOrders}</span>
                         </h4>
 
+                        {/* DAILY SALES REPORT DATE PICKER & CSV EXPORTER */}
+                        <div className="mb-4 bg-zinc-950 p-4 rounded-xl border border-zinc-850/80 flex flex-col sm:flex-row gap-3 items-center justify-between">
+                          <div className="text-left">
+                            <span className="text-[10px] font-display uppercase tracking-widest text-amber-500 font-bold block">Sales Export Module</span>
+                            <span className="text-[9px] text-zinc-500 block uppercase mt-0.5">Export operational spreadsheets</span>
+                          </div>
+                          <div className="flex gap-1.5 w-full sm:w-auto">
+                            <input 
+                              type="date"
+                              value={selectedReportDate}
+                              onChange={(e) => setSelectedReportDate(e.target.value)}
+                              className="bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-350 px-2 py-1.5 rounded-lg outline-none focus:border-red-500"
+                            />
+                            <button
+                              onClick={() => handleExportCSV(selectedReportDate)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-display font-semibold uppercase tracking-wider flex items-center gap-1 active:scale-95 transition"
+                            >
+                              <Download className="w-3.5 h-3.5" /> CSV Export
+                            </button>
+                          </div>
+                        </div>
+
                         {allOrders.length === 0 ? (
                           <div className="py-12 text-center">
-                            <p className="text-xs text-zinc-500 font-display uppercase tracking-wider">No orders logged.</p>
+                            <p className="text-xs text-zinc-505 font-display uppercase tracking-wider">No orders logged.</p>
                           </div>
                         ) : (
                           <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
@@ -1101,14 +1744,27 @@ export default function BossRicePOS() {
                                     <div className="flex items-center gap-2 mb-1">
                                       <span className="text-white text-xs font-mono font-bold">#{itm.order_number}</span>
                                       <span className="text-[9px] uppercase tracking-widest font-display text-zinc-650 font-semibold">{itm.payment_method}</span>
+                                      {itm.branch && (
+                                        <span className="text-[8px] uppercase tracking-wide font-mono bg-zinc-900 text-zinc-400 px-1 border border-zinc-855 rounded">{itm.branch}</span>
+                                      )}
                                     </div>
                                     <p className="text-[10px] text-zinc-500 font-display line-clamp-1 truncate uppercase">
                                       {itm.items.join(', ')}
                                     </p>
                                   </div>
-                                  <div className="text-right flex-none">
-                                    <span className="font-mono font-bold text-amber-500 block text-xs">₱{itm.total}</span>
-                                    <span className="text-[9px] font-mono text-zinc-500 block mt-0.5">{orderTime}</span>
+                                  <div className="text-right flex items-center gap-3">
+                                    <div>
+                                      <span className="font-mono font-bold text-amber-500 block text-xs">₱{itm.total}</span>
+                                      <span className="text-[9px] font-mono text-zinc-500 block mt-0.5">{orderTime}</span>
+                                    </div>
+                                    
+                                    <button 
+                                      onClick={() => deleteOrder(itm.id, itm.order_number)}
+                                      title="Delete transaction record"
+                                      className="p-1 px-1.5 bg-red-950/20 hover:bg-red-600 border border-red-900/30 hover:border-red-500 text-red-400 hover:text-white rounded-lg transition"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
                                   </div>
                                 </div>
                               );
@@ -1197,7 +1853,38 @@ export default function BossRicePOS() {
                                 <span className="bg-zinc-900 w-10 h-10 rounded-lg flex items-center justify-center text-xl border border-zinc-850">{p.emoji}</span>
                                 <div>
                                   <h6 className="text-xs font-display font-bold uppercase tracking-wide text-zinc-200">{p.name}</h6>
-                                  <span className="text-[10px] font-mono text-zinc-550 block mt-0.5">₱{p.price}</span>
+                                  {editingProductId === p.id ? (
+                                    <div className="flex items-center gap-1.5 mt-1.5">
+                                      <input 
+                                        type="number"
+                                        value={editingProductPrice}
+                                        onChange={(e) => setEditingProductPrice(e.target.value)}
+                                        className="bg-zinc-900 border border-zinc-800 w-20 p-1 px-2 rounded font-mono text-[11px] text-white focus:outline-none focus:border-amber-500"
+                                      />
+                                      <button 
+                                        onClick={() => handleUpdateProductPrice(p.id)}
+                                        className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 scale-90"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button 
+                                        onClick={() => setEditingProductId(null)}
+                                        className="p-1 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-750 scale-90"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] font-mono text-zinc-550 block mt-0.5 flex items-center gap-2">
+                                      <span>₱{p.price}</span>
+                                      <button 
+                                        onClick={() => { setEditingProductId(p.id); setEditingProductPrice(p.price.toString()); }}
+                                        className="text-[9px] text-amber-500 hover:underline uppercase flex items-center gap-0.5"
+                                      >
+                                        <Edit className="w-2.5 h-2.5" /> Edit
+                                      </button>
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                               <button 
@@ -1233,7 +1920,7 @@ export default function BossRicePOS() {
                       
                       <article className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl flex flex-col justify-between">
                         <div>
-                          <span className="text-zinc-500 text-[10px] uppercase font-display font-bold tracking-widest block mb-1">💰 Today's Sales</span>
+                          <span className="text-zinc-500 text-[10px] uppercase font-display font-bold tracking-widest block mb-1">💰 Today&apos;s Sales</span>
                           <div className="text-3xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
                         </div>
                         <p className="text-[10px] text-zinc-500 mt-4 uppercase tracking-wider">Processed through your cashier credentials</p>
@@ -1261,20 +1948,303 @@ export default function BossRicePOS() {
                             const dateObj = new Date(ord.created_at);
                             const tStr = dateObj.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
                             return (
-                              <div key={idx} className="bg-zinc-950 p-3.5 rounded-xl flex items-center justify-between border border-zinc-850">
-                                <div>
-                                  <span className="font-mono font-bold text-xs">#{ord.order_number}</span>
-                                  <p className="text-[10px] text-zinc-500 mt-0.5 uppercase line-clamp-1">{ord.items.join(', ')}</p>
+                              <div key={idx} className="bg-zinc-950 p-3.5 rounded-xl flex items-center justify-between border border-zinc-850 gap-4">
+                                <div className="min-w-0">
+                                  <span className="font-mono font-bold text-xs text-white">#{ord.order_number}</span>
+                                  <span className="text-[8px] uppercase tracking-wider font-mono bg-zinc-900 border border-zinc-850 px-1 ml-2 text-zinc-500">{ord.payment_method}</span>
+                                  <p className="text-[10px] text-zinc-500 mt-1 uppercase line-clamp-1">{ord.items.join(', ')}</p>
                                 </div>
-                                <div className="text-right">
-                                  <span className="font-mono font-bold text-amber-550 block text-xs">₱{ord.total}</span>
-                                  <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block">{tStr} · {ord.payment_method}</span>
+                                <div className="text-right flex items-center gap-3 flex-none">
+                                  <div>
+                                    <span className="font-mono font-bold text-amber-550 block text-xs">₱{ord.total}</span>
+                                    <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block">{tStr}</span>
+                                  </div>
+                                  <button
+                                    onClick={() => triggerVoidRequest(ord)}
+                                    className="p-1.5 px-3 bg-red-950/20 hover:bg-red-600 border border-red-900/30 hover:border-red-500 text-red-400 hover:text-white rounded-lg text-[9px] uppercase tracking-wider font-bold transition flex items-center gap-1 active:scale-95 duration-200"
+                                  >
+                                    <AlertTriangle className="w-3 h-3" /> Void
+                                  </button>
                                 </div>
                               </div>
                             );
                           })}
                         </div>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* E. ADMIN: CASHIER SHIFTS & BRANCHES */}
+                {activeTab === 'shifts' && currentRole === 'admin' && (
+                  <div className="flex flex-col gap-6">
+                    <header>
+                      <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                        Cashier <span className="text-red-500">Shifts</span> & Branches
+                      </h2>
+                      <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                        A list of shift records with beginning balances and branch assignments
+                      </p>
+                    </header>
+
+                    <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                      <h4 className="text-xs uppercase font-display font-bold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4 flex justify-between items-center">
+                        <span>📋 Shifts Historical Log</span>
+                        <span className="text-[10px] font-mono text-zinc-650 uppercase">showing {shifts.length} registers entries</span>
+                      </h4>
+
+                      {shifts.length === 0 ? (
+                        <p className="text-xs text-zinc-505 font-display uppercase tracking-wider text-center py-12">No historical cashier shifts logged.</p>
+                      ) : (
+                        <div className="flex flex-col gap-3">
+                          {shifts.map((sh, idx) => {
+                            const dateStr = new Date(sh.login_time).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+                            return (
+                              <div key={idx} className="bg-zinc-950 border border-zinc-850 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                                <div>
+                                  <div className="flex items-center gap-2 mb-1.5">
+                                    <span className="text-xs font-bold text-white uppercase tracking-wider">👤 {sh.cashier_name}</span>
+                                    <span className="text-[9px] font-mono tracking-widest bg-red-950/40 text-red-400 border border-red-900/40 px-2 rounded-full uppercase">{sh.branch}</span>
+                                  </div>
+                                  <p className="text-[10px] text-zinc-500 font-display font-light">Shift session active since {dateStr}</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 text-right flex-none">
+                                  <div>
+                                    <span className="text-[9px] text-zinc-500 block uppercase font-bold">Beginning Balance</span>
+                                    <span className="text-xs font-mono font-bold text-zinc-300">₱{sh.beginning_balance}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[9px] text-amber-500 block uppercase font-bold font-mono">Shift Sales</span>
+                                    <span className="text-xs font-mono font-bold text-amber-500">₱{sh.total_sales || 0}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* F. ADMIN: STAFF SETTINGS ACCOUNT REGISTRAR */}
+                {activeTab === 'staff' && currentRole === 'admin' && (
+                  <div className="flex flex-col gap-6">
+                    <header>
+                      <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                        Staff <span className="text-red-500">Credentials</span> & Security
+                      </h2>
+                      <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                        Configure roles, add cashier registers, or update access PIN passwords
+                      </p>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      
+                      {/* ADD STAFF ACCOUNT WRAPPER */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-1">
+                          REGISTER NEW STAFF ACCOUNT
+                        </h4>
+                        
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Staff Nickname / Username</label>
+                          <input 
+                            type="text" 
+                            placeholder="e.g. maria" 
+                            value={newStaffUsername}
+                            onChange={(e) => setNewStaffUsername(e.target.value)}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-display text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-500 transition"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Access PIN (Number)</label>
+                            <input 
+                              type="text" 
+                              placeholder="e.g. 5678" 
+                              value={newStaffPassword}
+                              onChange={(e) => setNewStaffPassword(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-550 transition"
+                            />
+                          </div>
+
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Assigned Role</label>
+                            <select
+                              value={newStaffRole}
+                              onChange={(e) => setNewStaffRole(e.target.value as 'cashier' | 'admin')}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none cursor-pointer"
+                            >
+                              <option value="cashier">CASHIER</option>
+                              <option value="admin">MANAGER / ADMIN</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={handleAddStaffUser}
+                          className="mt-2 w-full bg-red-650 hover:bg-red-700 text-xs font-display font-bold text-white p-3 rounded-xl transition uppercase tracking-wider shadow-lg shadow-red-600/10 active:scale-95 cursor-pointer"
+                        >
+                          ➕ Register Account Profile
+                        </button>
+                      </div>
+
+                      {/* PASSWORD PIN CHANGER */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-1">
+                          UPDATE STAFF PIN PASSWORD
+                        </h4>
+
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Select Account Profile</label>
+                          <select
+                            value={passwordChangeUser}
+                            onChange={(e) => setPasswordChangeUser(e.target.value)}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none cursor-pointer"
+                          >
+                            <option value="">-- Choose Profile --</option>
+                            {users.map(u => (
+                              <option key={u.username} value={u.username}>
+                                👤 {u.username.toUpperCase()} ({u.role})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Fresh New PIN Code</label>
+                          <input 
+                            type="text" 
+                            placeholder="e.g. 4321" 
+                            value={passwordChangeNew}
+                            onChange={(e) => setPasswordChangeNew(e.target.value)}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-500 transition"
+                          />
+                        </div>
+
+                        <button 
+                          onClick={handleChangeStaffPassword}
+                          className="mt-2 w-full bg-amber-500 hover:bg-amber-600 text-xs font-display font-bold text-white p-3 rounded-xl transition uppercase tracking-wider shadow-lg shadow-amber-500/10 active:scale-95 cursor-pointer"
+                        >
+                          🔐 Change PIN Code Password
+                        </button>
+                      </div>
+
+                      {/* CURRENT REGISTERED STAFF SUMMARY PANEL */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl col-span-1 lg:col-span-2">
+                        <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4">
+                          Registered Staff Members Database List
+                        </h4>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {users.map((item, idx) => (
+                            <article key={idx} className="bg-zinc-950 border border-zinc-850 p-3.5 rounded-xl flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-xs">👤</span>
+                                <div>
+                                  <span className="text-xs font-bold text-white block uppercase tracking-wide">{item.username}</span>
+                                  <span className="text-[9px] uppercase font-mono tracking-widest text-zinc-550 block mt-0.5">{item.role}</span>
+                                </div>
+                              </div>
+                              <span className="font-mono text-xs text-amber-500 bg-amber-950/20 px-2 py-0.5 border border-amber-900/30 rounded">PIN: {item.password}</span>
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+
+                {/* G. EXPENSES LEDGER TRACKER */}
+                {activeTab === 'expenses' && (
+                  <div className="flex flex-col gap-6">
+                    <header>
+                      <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                        Expenses <span className="text-red-500">Ledger</span> Panel
+                      </h2>
+                      <p className="text-xs text-zinc-505 mt-1 uppercase tracking-wider">
+                        Log ingredients, store purchases, repairs or utility costs incurred
+                      </p>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+                      
+                      {/* LOG EXPENSE FORM (Cashiers can log, admins can also check) */}
+                      {currentRole === 'cashier' ? (
+                        <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                          <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-1 font-bold">
+                            LOG CASHIER EXPENSE
+                          </h4>
+
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Expense Bought Item Name</label>
+                            <input 
+                              type="text" 
+                              placeholder="e.g. Rice Sacks, Cooking Oil" 
+                              value={newExpenseName}
+                              onChange={(e) => setNewExpenseName(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-display text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-550 transition"
+                            />
+                          </div>
+
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Amount Cost Price (₱)</label>
+                            <input 
+                              type="number" 
+                              placeholder="e.g. 2500" 
+                              value={newExpenseCost}
+                              onChange={(e) => setNewExpenseCost(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-550 transition"
+                            />
+                          </div>
+
+                          <button 
+                            onClick={handleAddExpense}
+                            className="mt-2 w-full bg-red-650 hover:bg-red-700 text-xs font-display font-bold text-white p-3 rounded-xl transition uppercase tracking-wider shadow-lg shadow-red-600/10 active:scale-95 cursor-pointer"
+                          >
+                            ➕ Submit Expense Cost
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="bg-zinc-900/40 border border-zinc-850 p-6 rounded-2xl flex flex-col gap-2 text-center py-10">
+                          <span className="text-2xl">📊</span>
+                          <span className="text-xs uppercase font-display font-bold text-zinc-300">ADMIN CONTROL</span>
+                          <p className="text-[10px] uppercase text-zinc-500 max-w-[180px] leading-relaxed mx-auto font-light">Cashiers log active grocery costs directly inside cashier terminals</p>
+                        </div>
+                      )}
+
+                      {/* DISPLAY EXPENSES LEDGER FEED */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl col-span-1 lg:col-span-2 flex flex-col gap-3">
+                        <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-2 flex justify-between items-center">
+                          <span>📋 Shift Expenses History Ledger</span>
+                          <span className="text-[10px] font-mono font-medium text-zinc-650 uppercase">Total Logged: {expenses.length} costs</span>
+                        </h4>
+
+                        {expenses.length === 0 ? (
+                          <p className="text-xs text-zinc-505 font-display uppercase tracking-wider text-center py-12">No expenses logged yet in this period.</p>
+                        ) : (
+                          <div className="flex flex-col gap-2 max-h-96 overflow-y-auto pr-1">
+                            {expenses.map((exp, idx) => {
+                              const expDate = new Date(exp.created_at || new Date()).toLocaleString('en-PH', { dateStyle: 'short', timeStyle: 'short' });
+                              return (
+                                <article key={idx} className="bg-zinc-950 border border-zinc-850 p-3.5 rounded-xl flex items-center justify-between">
+                                  <div>
+                                    <span className="text-xs font-bold text-zinc-300 block uppercase tracking-wide">{exp.product_name}</span>
+                                    <span className="text-[9px] text-zinc-500 font-mono mt-0.5 uppercase block">
+                                      Logged by {exp.cashier_name} @ {exp.branch || 'Main Branch'} · {expDate}
+                                    </span>
+                                  </div>
+                                  <span className="font-mono text-xs font-bold text-red-400 bg-red-950/20 border border-red-955 px-2.5 py-1 rounded">₱{exp.cost}</span>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
                     </div>
                   </div>
                 )}
@@ -1535,7 +2505,7 @@ export default function BossRicePOS() {
 
               {/* Instructions list */}
               <div className="bg-zinc-950 border border-zinc-850 p-4 rounded-2xl text-left text-xs mb-6 max-w-sm m-auto text-zinc-400 space-y-2">
-                <div className="flex gap-2"><span className="text-blue-500 font-bold">1.</span> <span>Launch the <strong>GCash Wallet application</strong> on customer's phone</span></div>
+                <div className="flex gap-2"><span className="text-blue-500 font-bold">1.</span> <span>Launch the <strong>GCash Wallet application</strong> on customer&apos;s phone</span></div>
                 <div className="flex gap-2"><span className="text-blue-500 font-bold">2.</span> <span>Select <strong>Scan QR</strong> and hover over the terminal register screen</span></div>
                 <div className="flex gap-2"><span className="text-blue-500 font-bold">3.</span> <span>Send the exact amount: <strong className="text-amber-500 font-mono">₱{cartTotalAmount}</strong></span></div>
               </div>
