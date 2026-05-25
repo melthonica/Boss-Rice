@@ -1,0 +1,1737 @@
+'use client';
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { supabase } from '@/lib/supabase';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  ShoppingCart, Plus, Minus, Trash2, LogOut, Search, 
+  Check, Wifi, WifiOff, X, Key, Settings, QrCode, 
+  Coins, TrendingUp, Grid, RefreshCw, Smartphone, 
+  User, Database, Calendar, Briefcase, PlusCircle 
+} from 'lucide-react';
+
+// --- TYPES ---
+interface Product {
+  id: number;
+  name: string;
+  emoji: string;
+  price: number;
+  active: boolean;
+  category?: 'Meals' | 'Add-ons' | 'Drinks';
+}
+
+interface Order {
+  id?: number;
+  order_number: number;
+  items: string[];
+  total: number;
+  payment_method: string;
+  cash_received?: number;
+  change_given?: number;
+  cashier_role: string;
+  created_at: string;
+}
+
+// --- SUBTLE HIGH-QUALITY AUDIO ENGINE ---
+const playSound = (type: 'beep' | 'success' | 'click' | 'error' | 'bell') => {
+  if (typeof window === 'undefined') return;
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    
+    if (type === 'beep') {
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.08);
+    } else if (type === 'success') {
+      osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+      osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1);
+      osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.35);
+    } else if (type === 'bell') {
+      osc.frequency.setValueAtTime(1200, ctx.currentTime);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.2);
+    } else if (type === 'error') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, ctx.currentTime);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.4);
+    } else if (type === 'click') {
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.04);
+    }
+  } catch (e) {
+    console.warn('Audio contexts not allowed yet by browser policies.');
+  }
+};
+
+export default function BossRicePOS() {
+  // --- AUTH STATES ---
+  const [currentRole, setCurrentRole] = useState<'admin' | 'cashier' | null>(null);
+  const [selectedRole, setSelectedRole] = useState<'admin' | 'cashier'>('admin');
+  const [enteredPin, setEnteredPin] = useState<string>('');
+  const [loginError, setLoginError] = useState<string>('');
+
+  // --- Core POS STATE ---
+  const [products, setProducts] = useState<Product[]>([]);
+  const [cart, setCart] = useState<{ [id: number]: number }>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<'All' | 'Meals' | 'Add-ons' | 'Drinks'>('All');
+  const [allOrders, setAllOrders] = useState<Order[]>([]);
+  
+  // --- SYNC LED STATE ---
+  const [syncStatus, setSyncStatus] = useState<'online' | 'syncing' | 'offline'>('syncing');
+  const [isInitializing, setIsInitializing] = useState(true);
+
+  // --- ACTIVE VIEWS / TAB ---
+  const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift'>('pos');
+  const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+
+  // --- NOTIFICATION / TOAST ---
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // --- AUDIO SYSTEM TOGGLE ---
+  const [audioEnabled, setAudioEnabled] = useState(true);
+
+  // --- CHECKOUT FLOWS ---
+  const [chargeModalOpen, setChargeModalOpen] = useState(false);
+  const [cashModalOpen, setCashModalOpen] = useState(false);
+  const [gcashModalOpen, setGcashModalOpen] = useState(false);
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [activeReceiptOrder, setActiveReceiptOrder] = useState<any | null>(null);
+
+  // --- CASH REGISTER DATA ---
+  const [cashReceivedText, setCashReceivedText] = useState<string>('');
+
+  // --- PRODUCT MANAGEMENT ---
+  const [newProdName, setNewProdName] = useState('');
+  const [newProdPrice, setNewProdPrice] = useState('');
+  const [newProdEmoji, setNewProdEmoji] = useState('🍱');
+
+  // --- CONFIRMATION MODAL STATE ---
+  const [confirmDialog, setConfirmDialog] = useState<{
+    show: boolean;
+    title: string;
+    msg: string;
+    onConfirm: () => void;
+  }>({ show: false, title: '', msg: '', onConfirm: () => {} });
+
+  const [currentTime, setCurrentTime] = useState<string>('00:00:00');
+
+  // --- AUTO RE-LOAD REFS ---
+  const syncTimeoutRef = useRef<any>(null);
+
+  // --- TOAST SERVICE ---
+  const showNotification = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 2800);
+  };
+
+  // --- PHILIPPINES LOCAL CLOCK ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      setCurrentTime(now.toLocaleTimeString('en-PH', { hour12: false }));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // --- DEFAULT FALLBACK PRODUCTS ---
+  const defaultProducts: Product[] = useMemo(() => [
+    { id: 101, name: 'Java Rice + Lumpia', emoji: '🥟', price: 55, active: true },
+    { id: 102, name: 'Java Rice + Siomai', emoji: '🥟', price: 75, active: true },
+    { id: 103, name: 'Java Rice + Ginabot', emoji: '🍖', price: 85, active: true },
+    { id: 104, name: 'Java Rice + Burger Steak', emoji: '🍔', price: 75, active: true },
+    { id: 105, name: 'Pork Belly (Soy Sauce)', emoji: '🥩', price: 95, active: true },
+    { id: 106, name: 'Pork Belly (Garlic Gravy)', emoji: '🥩', price: 95, active: true },
+    { id: 107, name: 'Add-on Burger Patty', emoji: '🍔', price: 25, active: true },
+    { id: 108, name: 'Add-on Ginabot', emoji: '🍖', price: 50, active: true },
+    { id: 109, name: 'Add-on Pork Belly', emoji: '🥩', price: 50, active: true },
+    { id: 110, name: 'Softdrinks Sakto', emoji: '🥤', price: 15, active: true },
+  ], []);
+
+  // --- BOOTSTRAP DATA ---
+  const bootstrapPOS = async () => {
+    setSyncStatus('syncing');
+    setIsInitializing(true);
+    try {
+      // Fetch products
+      const { data: remoteProds, error: prodErr } = await supabase
+        .from('products')
+        .select('*')
+        .eq('active', true)
+        .order('id', { ascending: true });
+
+      if (prodErr) throw prodErr;
+
+      let validProducts = remoteProds || [];
+      if (validProducts.length === 0) {
+        // Bootstrap Supabase with sample products if table is completely empty
+        const bulkInsert = defaultProducts.map(({ id, ...p }) => p);
+        const { data: inserted, error: insertErr } = await supabase
+          .from('products')
+          .insert(bulkInsert)
+          .select();
+        
+        if (!insertErr && inserted) {
+          validProducts = inserted;
+        } else {
+          validProducts = defaultProducts;
+        }
+      }
+
+      setProducts(validProducts);
+      localStorage.setItem('br_menu_cached', JSON.stringify(validProducts));
+      setSyncStatus('online');
+    } catch (e) {
+      console.warn('Sync failed, running local fallback: ', e);
+      setSyncStatus('offline');
+      // Load cached
+      const cache = localStorage.getItem('br_menu_cached');
+      if (cache) {
+        setProducts(JSON.parse(cache));
+      } else {
+        setProducts(defaultProducts);
+      }
+      showNotification('Running in Offline Mode / Local Cache');
+    } finally {
+      setIsInitializing(false);
+    }
+  };
+
+  // --- FETCH HISTORIC ORDERS ---
+  const syncOrders = async (period: 'daily' | 'weekly' | 'monthly') => {
+    setSyncStatus('syncing');
+    try {
+      let start = new Date();
+      if (period === 'daily') {
+        start.setHours(0, 0, 0, 0);
+      } else if (period === 'weekly') {
+        const day = start.getDay();
+        start.setDate(start.getDate() - day);
+        start.setHours(0,0,0,0);
+      } else {
+        start = new Date(start.getFullYear(), start.getMonth(), 1);
+      }
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .gte('created_at', start.toISOString())
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const items = data || [];
+      setAllOrders(items);
+      localStorage.setItem(`br_orders_${period}`, JSON.stringify(items));
+      setSyncStatus('online');
+    } catch (err) {
+      setSyncStatus('offline');
+      const cache = localStorage.getItem(`br_orders_${period}`);
+      if (cache) setAllOrders(JSON.parse(cache));
+    }
+  };
+
+  // --- RETRIEVE CACHED SESSION ON LOAD ---
+  useEffect(() => {
+    bootstrapPOS();
+    const session = localStorage.getItem('br_session_v1');
+    if (session) {
+      const parsed = JSON.parse(session);
+      setCurrentRole(parsed.role);
+    }
+  }, [defaultProducts]);
+
+  // Sync historical orders on report views
+  useEffect(() => {
+    if (currentRole) {
+      syncOrders(reportPeriod);
+    }
+  }, [currentRole, reportPeriod]);
+
+  // --- SEARCH & CATEGORY CLASSIFICATION ---
+  const productsWithCategoriesAndFilters = useMemo(() => {
+    return products.map(p => {
+      // Simple automated taggers to avoid database schemas edits
+      let cat: 'Meals' | 'Add-ons' | 'Drinks' = 'Meals';
+      const nameLower = p.name.toLowerCase();
+      if (nameLower.includes('add-on') || nameLower.includes('extra') || nameLower.includes('add on') || nameLower.includes('patty') || nameLower.includes('ginabot') && nameLower.includes('add')) {
+        cat = 'Add-ons';
+      } else if (nameLower.includes('drink') || nameLower.includes('col') || nameLower.includes('sakto') || nameLower.includes('water') || nameLower.includes('sprite') || nameLower.includes('coke') || nameLower.includes('juice')) {
+        cat = 'Drinks';
+      }
+      return { ...p, category: cat };
+    }).filter(p => {
+      const queryMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const categoryMatch = selectedCategory === 'All' || p.category === selectedCategory;
+      return queryMatch && categoryMatch;
+    });
+  }, [products, searchQuery, selectedCategory]);
+
+  // --- AUDIO CLICK UTILITY ---
+  const handleTactileClick = () => {
+    if (audioEnabled) playSound('click');
+  };
+
+  // --- AUTH HANDLERS ---
+  const handlePinNumpad = (num: string) => {
+    handleTactileClick();
+    if (enteredPin.length < 6) {
+      setEnteredPin(prev => prev + num);
+    }
+  };
+
+  const handlePinDelete = () => {
+    handleTactileClick();
+    setEnteredPin(prev => prev.slice(0, -1));
+  };
+
+  const attemptLogin = () => {
+    const pinsMap = { admin: '1234', cashier: '5678' };
+    if (enteredPin === pinsMap[selectedRole]) {
+      if (audioEnabled) playSound('success');
+      setCurrentRole(selectedRole);
+      localStorage.setItem('br_session_v1', JSON.stringify({ role: selectedRole, time: Date.now() }));
+      setEnteredPin('');
+      setLoginError('');
+      setActiveTab('pos');
+    } else {
+      if (audioEnabled) playSound('error');
+      setLoginError('Incorrect PIN. Please try again.');
+      setEnteredPin('');
+    }
+  };
+
+  const attemptLogout = () => {
+    handleTactileClick();
+    localStorage.removeItem('br_session_v1');
+    setCurrentRole(null);
+    setCart({});
+  };
+
+  // --- CART OPERATIONS ---
+  const addToCart = (id: number) => {
+    if (audioEnabled) playSound('beep');
+    setCart(prev => ({
+      ...prev,
+      [id]: (prev[id] || 0) + 1
+    }));
+  };
+
+  const decrementCart = (id: number) => {
+    handleTactileClick();
+    setCart(prev => {
+      const updated = { ...prev };
+      if (!updated[id]) return prev;
+      updated[id]--;
+      if (updated[id] <= 0) {
+        delete updated[id];
+      }
+      return updated;
+    });
+  };
+
+  const directRemoveFromCart = (id: number) => {
+    handleTactileClick();
+    setCart(prev => {
+      const updated = { ...prev };
+      delete updated[id];
+      return updated;
+    });
+  };
+
+  const clearEntireCart = () => {
+    if (Object.keys(cart).length === 0) return;
+    setConfirmDialog({
+      show: true,
+      title: 'Clear Running Order?',
+      msg: 'Are you sure you want to delete all items currently placed in the basket?',
+      onConfirm: () => {
+        if (audioEnabled) playSound('bell');
+        setCart({});
+        setConfirmDialog(p => ({ ...p, show: false }));
+        showNotification('Order cleared.');
+      }
+    });
+  };
+
+  const cartTotalAmount = useMemo(() => {
+    return Object.entries(cart).reduce((sum, [idStr, quantity]) => {
+      const pid = parseInt(idStr);
+      const prod = products.find(p => p.id === pid);
+      return sum + (prod ? prod.price * quantity : 0);
+    }, 0);
+  }, [cart, products]);
+
+  const totalItemCount = useMemo(() => {
+    return Object.values(cart).reduce((sum, val) => sum + val, 0);
+  }, [cart]);
+
+  // --- CHECKOUT FINALIZE ---
+  const selectPaymentOption = (method: 'cash' | 'gcash') => {
+    handleTactileClick();
+    if (method === 'cash') {
+      setCashReceivedText('');
+      setCashModalOpen(true);
+    } else {
+      setGcashModalOpen(true);
+    }
+    setChargeModalOpen(false);
+  };
+
+  const submitCashCheckout = async () => {
+    const receivedAmount = parseFloat(cashReceivedText || '0');
+    if (receivedAmount < cartTotalAmount) {
+      if (audioEnabled) playSound('error');
+      return;
+    }
+
+    const changeDueValue = receivedAmount - cartTotalAmount;
+    setCashModalOpen(false);
+    await processOrderSave('Cash', receivedAmount, changeDueValue);
+  };
+
+  const submitGcashCheckout = async () => {
+    setGcashModalOpen(false);
+    await processOrderSave('GCash', cartTotalAmount, 0);
+  };
+
+  const processOrderSave = async (payMethod: string, cashInput: number, changeAmount: number) => {
+    setSyncStatus('syncing');
+    
+    // Auto incremental order numbers local store
+    let lastOrderNum = parseInt(localStorage.getItem('br_last_order_num') || '0');
+    const assignedOrderNum = lastOrderNum + 1;
+    localStorage.setItem('br_last_order_num', assignedOrderNum.toString());
+
+    // Generate neat items array
+    const orderedProductsSummaries = Object.entries(cart).map(([pIdStr, qty]) => {
+      const prod = products.find(p => p.id === parseInt(pIdStr));
+      return prod ? `${prod.name} x${qty}` : `Unknown Item x${qty}`;
+    });
+
+    const newOrderRecord: Order = {
+      order_number: assignedOrderNum,
+      items: orderedProductsSummaries,
+      total: cartTotalAmount,
+      payment_method: payMethod,
+      cash_received: cashInput,
+      change_given: changeAmount,
+      cashier_role: currentRole || 'cashier',
+      created_at: new Date().toISOString()
+    };
+
+    if (audioEnabled) playSound('success');
+
+    try {
+      const { error } = await supabase.from('orders').insert([newOrderRecord]);
+      if (error) throw error;
+      setSyncStatus('online');
+    } catch (e) {
+      console.warn('Network issue while writing order, saving to local retry stack.', e);
+      setSyncStatus('offline');
+      // Save locally to background buffer
+      const unsynced = JSON.parse(localStorage.getItem('br_unsynced_orders') || '[]');
+      unsynced.push(newOrderRecord);
+      localStorage.setItem('br_unsynced_orders', JSON.stringify(unsynced));
+    }
+
+    // Trigger printed modal
+    setActiveReceiptOrder(newOrderRecord);
+    setReceiptModalOpen(true);
+  };
+
+  const closeReceiptAndAdvance = () => {
+    handleTactileClick();
+    setCart({});
+    setReceiptModalOpen(false);
+    setActiveReceiptOrder(null);
+    syncOrders(reportPeriod);
+  };
+
+  // --- CASH NUMERIC KEYPAD KEYSTROKES ---
+  const handleCashNumpadInput = (input: string) => {
+    handleTactileClick();
+    if (input === 'del') {
+      setCashReceivedText(prev => prev.slice(0, -1));
+    } else if (input === 'exact') {
+      setCashReceivedText(cartTotalAmount.toString());
+    } else {
+      setCashReceivedText(prev => {
+        if (prev === '0') return input;
+        return prev + input;
+      });
+    }
+  };
+
+  const handleCashQuickAdd = (amount: number) => {
+    handleTactileClick();
+    const current = parseFloat(cashReceivedText || '0');
+    setCashReceivedText((current + amount).toString());
+  };
+
+  // --- PRODUCT INVENTORY CONTROL ---
+  const triggerAddProduct = async () => {
+    const priceNum = parseFloat(newProdPrice);
+    if (!newProdName.trim() || isNaN(priceNum) || priceNum <= 0) {
+      if (audioEnabled) playSound('error');
+      showNotification('Please enter a valid product name and price.');
+      return;
+    }
+    setSyncStatus('syncing');
+
+    const freshProduct = {
+      name: newProdName.trim(),
+      emoji: newProdEmoji.trim() || '🍱',
+      price: priceNum,
+      active: true
+    };
+
+    try {
+      const { data, error } = await supabase.from('products').insert([freshProduct]).select().single();
+      if (error) throw error;
+      setProducts(prev => [...prev, data]);
+      setNewProdName('');
+      setNewProdPrice('');
+      setNewProdEmoji('🍱');
+      if (audioEnabled) playSound('bell');
+      showNotification('Success! Inserted on live menus.');
+      setSyncStatus('online');
+    } catch (err: any) {
+      setSyncStatus('offline');
+      // Save offline simulated increment
+      const localAlt: Product = {
+        id: Date.now(),
+        ...freshProduct
+      };
+      setProducts(prev => [...prev, localAlt]);
+      localStorage.setItem('br_menu_cached', JSON.stringify([...products, localAlt]));
+      setNewProdName('');
+      setNewProdPrice('');
+      setNewProdEmoji('🍱');
+      showNotification('Saved locally (Offline mode)');
+    }
+  };
+
+  const triggerDeactivateProduct = (p: Product) => {
+    handleTactileClick();
+    setConfirmDialog({
+      show: true,
+      title: `Deactivate ${p.name}?`,
+      msg: 'This moves the product to inactive storage, hiding it from daily POS layouts immediately.',
+      onConfirm: async () => {
+        setSyncStatus('syncing');
+        setConfirmDialog(prev => ({ ...prev, show: false }));
+        try {
+          const { error } = await supabase.from('products').update({ active: false }).eq('id', p.id);
+          if (error) throw error;
+          setProducts(prev => prev.filter(item => item.id !== p.id));
+          showNotification('Product removed from active grids.');
+          setSyncStatus('online');
+        } catch (err) {
+          setSyncStatus('offline');
+          const left = products.filter(item => item.id !== p.id);
+          setProducts(left);
+          localStorage.setItem('br_menu_cached', JSON.stringify(left));
+          showNotification('Removed locally from screen cache');
+        }
+      }
+    });
+  };
+
+  // --- STATS PARSING ---
+  const analyticsData = useMemo(() => {
+    const stats = {
+      revenue: 0,
+      totalOrders: allOrders.length,
+      averageTicket: 0,
+      cashRevenue: 0,
+      gcashRevenue: 0,
+      cashCount: 0,
+      gcashCount: 0
+    };
+
+    allOrders.forEach(o => {
+      stats.revenue += o.total;
+      if (o.payment_method === 'Cash') {
+        stats.cashRevenue += o.total;
+        stats.cashCount++;
+      } else {
+        stats.gcashRevenue += o.total;
+        stats.gcashCount++;
+      }
+    });
+
+    stats.averageTicket = stats.totalOrders > 0 ? Math.round(stats.revenue / stats.totalOrders) : 0;
+    return stats;
+  }, [allOrders]);
+
+  // Leaders rankings parsing
+  const bestSellersRankings = useMemo(() => {
+    const scoreboard: { [name: string]: number } = {};
+    allOrders.forEach(order => {
+      if (Array.isArray(order.items)) {
+        order.items.forEach(itemStr => {
+          // Parse "Name xQuantity" or raw name
+          const match = itemStr.match(/(.+)\sx(\d+)/);
+          if (match) {
+            const name = match[1].trim();
+            const qty = parseInt(match[2]);
+            scoreboard[name] = (scoreboard[name] || 0) + qty;
+          } else {
+            scoreboard[itemStr] = (scoreboard[itemStr] || 0) + 1;
+          }
+        });
+      }
+    });
+
+    const list = Object.entries(scoreboard).map(([name, qty]) => ({ name, qty }));
+    list.sort((a,b) => b.qty - a.qty);
+    return list.slice(0, 5); // top 5
+  }, [allOrders]);
+
+  const maxBestSellerQty = useMemo(() => {
+    if (bestSellersRankings.length === 0) return 1;
+    return Math.max(...bestSellersRankings.map(b => b.qty));
+  }, [bestSellersRankings]);
+
+  // --- COMPUTE CHANGE CASH ---
+  const enteredReceivedValue = parseFloat(cashReceivedText || '0');
+  const computedChangeDue = enteredReceivedValue - cartTotalAmount;
+  const cashPayActive = enteredReceivedValue >= cartTotalAmount && cartTotalAmount > 0;
+
+  return (
+    <div className="flex flex-col min-h-screen text-zinc-100 bg-zinc-950 font-sans selection:bg-red-600/30">
+      
+      {/* ─── TOAST NOTIFICATION ─── */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: 30, x: '-50%' }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-zinc-900 border border-amber-500/30 text-amber-400 px-6 py-3 rounded-full shadow-2xl z-50 flex items-center gap-2 font-display font-medium text-xs tracking-wider uppercase backdrop-blur"
+          >
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            {toastMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── CONFIRM OVERLAY ─── */}
+      <AnimatePresence>
+        {confirmDialog.show && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+            >
+              <h4 className="text-lg font-display font-bold text-zinc-100 mb-2 uppercase tracking-wide">
+                ⚠️ {confirmDialog.title}
+              </h4>
+              <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
+                {confirmDialog.msg}
+              </p>
+              <div className="flex justify-end gap-3 font-display">
+                <button 
+                  onClick={() => { handleTactileClick(); setConfirmDialog(p => ({ ...p, show: false })); }}
+                  className="px-4 py-2 text-xs rounded-xl bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => { handleTactileClick(); confirmDialog.onConfirm(); }}
+                  className="px-4 py-2 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-700 text-white transition shadow-lg shadow-red-600/20"
+                >
+                  Confirm Action
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── INITIALIZING LOADER ─── */}
+      {isInitializing && currentRole && (
+        <div className="fixed inset-0 bg-zinc-950 z-50 flex flex-col items-center justify-center gap-4">
+          <div className="w-12 h-12 rounded-full border-2 border-zinc-800 border-t-red-600 animate-spin" />
+          <span className="text-xs font-display uppercase tracking-widest text-zinc-500 animate-pulse">Initializing Boss Rice System...</span>
+        </div>
+      )}
+
+      {/* ─── 1. LOGIN SCREEN (If not authenticated) ─── */}
+      {!currentRole ? (
+        <main className="min-h-screen flex items-center justify-center px-4 py-12 relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-red-950/20 via-zinc-950 to-zinc-950">
+          
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/5 blur-[120px] rounded-full pointer-events-none" />
+
+          <section className="w-full max-w-md bg-zinc-900/90 border border-zinc-800 rounded-3xl p-8 shadow-2xl relative z-10 backdrop-blur-md">
+            
+            <header className="text-center mb-8">
+              <h1 className="text-5xl font-display font-black tracking-tight text-white m-0 leading-none">
+                BOSS <span className="text-red-500">RICE</span>
+              </h1>
+              <p className="text-xs font-display font-semibold tracking-widest uppercase text-amber-500 mt-2">
+                Point Of Sale Terminal
+              </p>
+            </header>
+
+            {/* TAB SELECTOR */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950/80 rounded-2xl mb-6 border border-zinc-800/50">
+              <button 
+                onClick={() => { setSelectedRole('admin'); handleTactileClick(); }}
+                className={`py-3 rounded-xl font-display text-xs uppercase tracking-wider font-semibold transition-all ${
+                  selectedRole === 'admin' 
+                    ? 'bg-zinc-800 text-amber-400 shadow-inner border-b border-amber-500/20' 
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                👑 Manager
+              </button>
+              <button 
+                onClick={() => { setSelectedRole('cashier'); handleTactileClick(); }}
+                className={`py-3 rounded-xl font-display text-xs uppercase tracking-wider font-semibold transition-all ${
+                  selectedRole === 'cashier' 
+                    ? 'bg-zinc-800 text-red-400 shadow-inner border-b border-red-500/25' 
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                🧾 Cashier
+              </button>
+            </div>
+
+            {/* PIN INPUT ELEMENT */}
+            <div className="mb-6">
+              <div className="flex items-center justify-center h-14 bg-zinc-950 rounded-2xl border border-zinc-800 text-center text-3xl font-mono tracking-[0.5em] text-white">
+                {enteredPin ? '•'.repeat(enteredPin.length) : <span className="text-xs tracking-wider uppercase font-display text-zinc-600">Enter PIN</span>}
+              </div>
+              {loginError && (
+                <p className="text-center text-xs text-red-500 font-medium mt-2">{loginError}</p>
+              )}
+            </div>
+
+            {/* NUMPAD */}
+            <div className="grid grid-cols-3 gap-3 mb-6">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(val => (
+                <button
+                  key={val}
+                  onClick={() => handlePinNumpad(val)}
+                  className="h-14 rounded-xl bg-zinc-950 border border-zinc-850 hover:bg-zinc-850 text-xl font-display font-medium text-white transition active:scale-95"
+                >
+                  {val}
+                </button>
+              ))}
+              <button onClick={handlePinDelete} className="h-14 rounded-xl bg-zinc-950 border border-zinc-850 hover:bg-zinc-850 text-xs uppercase font-display text-red-500 transition active:scale-95">⌫</button>
+              <button onClick={() => handlePinNumpad('0')} className="h-14 rounded-xl bg-zinc-950 border border-zinc-850 hover:bg-zinc-850 text-xl font-display font-medium text-white transition active:scale-95">0</button>
+              <button 
+                onClick={attemptLogin}
+                className="h-14 rounded-xl bg-red-600 hover:bg-red-700 text-xs font-display font-bold uppercase tracking-widest text-white transition active:scale-95 shadow-lg shadow-red-600/20"
+              >
+                Go
+              </button>
+            </div>
+
+            <footer className="text-center">
+              <p className="text-[10px] uppercase tracking-wider text-zinc-600">
+                Authorized Use Only · Pins: Admin (1234), Cashier (5678)
+              </p>
+            </footer>
+          </section>
+        </main>
+      ) : (
+        
+        // ─── 2. SEAMLESS ACTIVE POS WORKSPACE ───
+        <div className="flex flex-col h-screen overflow-hidden">
+          
+          {/* HEADER */}
+          <header className="flex-none bg-zinc-900 border-b border-zinc-800 px-6 py-4 flex items-center justify-between shadow-md relative z-30">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-gradient-to-tr from-red-600 to-amber-500 rounded-xl flex items-center justify-center font-display font-extrabold text-white text-sm tracking-tight shadow-lg shadow-red-500/10">
+                BR
+              </div>
+              <div>
+                <h1 className="text-xl font-display font-black tracking-tight text-white leading-none">
+                  BOSS <span className="text-red-500">RICE</span>
+                </h1>
+                <p className="text-[10px] uppercase font-display tracking-widest text-zinc-500 mt-1 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Terminal Station
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              {/* SYNC INDICATOR */}
+              <div 
+                onClick={() => bootstrapPOS()}
+                title="Force refresh database sync"
+                className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-850 py-1.5 px-3 rounded-lg cursor-pointer hover:bg-zinc-850 transition"
+              >
+                {syncStatus === 'online' && (
+                  <>
+                    <Wifi className="w-3.5 h-3.5 text-emerald-500" />
+                    <span className="text-[9px] uppercase tracking-wider font-display text-emerald-500 font-semibold">Live Database</span>
+                  </>
+                )}
+                {syncStatus === 'syncing' && (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                    <span className="text-[9px] uppercase tracking-wider font-display text-amber-500 font-semibold">Syncing</span>
+                  </>
+                )}
+                {syncStatus === 'offline' && (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-zinc-500 animate-pulse" />
+                    <span className="text-[9px] uppercase tracking-wider font-display text-zinc-500 font-semibold">Offline (Local)</span>
+                  </>
+                )}
+              </div>
+
+              {/* CLOCK */}
+              <div className="text-xs font-mono font-medium tracking-widest bg-zinc-950 border border-zinc-850 py-1.5 px-3 rounded-lg text-zinc-400">
+                {currentTime}
+              </div>
+
+              {/* ADAPTIVE ROLE TAB */}
+              <div className={`text-[10px] font-display font-bold px-3 py-1.5 rounded-lg border uppercase tracking-wider flex items-center gap-1 ${
+                currentRole === 'admin' 
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                  : 'bg-red-500/10 text-red-400 border-red-500/20'
+              }`}>
+                <span>{currentRole === 'admin' ? '👑' : '🧾'}</span>
+                <span>{currentRole}</span>
+              </div>
+
+              {/* LOGOUT */}
+              <button 
+                onClick={attemptLogout}
+                title="Log out register"
+                className="p-2 rounded-lg bg-zinc-800 text-zinc-400 hover:text-red-500 transition hover:bg-red-500/10 active:scale-95"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </header>
+
+          {/* MAIN SPACE split in 2 columns: left is menu structure, right is cart pane */}
+          <div className="flex-1 flex overflow-hidden">
+            
+            {/* LEFT: PRODUCTS GRID AREA */}
+            <main className="flex-1 flex flex-col min-w-0 bg-zinc-950">
+              
+              {/* NAV PRESETS */}
+              <section className="flex-none bg-zinc-900/50 border-b border-zinc-900/90 p-4 flex gap-2 overflow-x-auto select-none">
+                <button 
+                  onClick={() => { handleTactileClick(); setActiveTab('pos'); }}
+                  className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
+                    activeTab === 'pos' 
+                      ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                      : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <Grid className="w-3.5 h-3.5" /> Ordered Grid
+                </button>
+
+                {currentRole === 'admin' ? (
+                  <>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('reports'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
+                        activeTab === 'reports' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <TrendingUp className="w-3.5 h-3.5" /> Sales Reports
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('products'); }}
+                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 relative ${
+                        activeTab === 'products' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Settings className="w-3.5 h-3.5" /> Product Management
+                    </button>
+                  </>
+                ) : (
+                  <button 
+                    onClick={() => { handleTactileClick(); setActiveTab('myshift'); }}
+                    className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 ${
+                      activeTab === 'myshift' 
+                        ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                        : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Briefcase className="w-3.5 h-3.5" /> My Cashier Shift
+                  </button>
+                )}
+
+                {/* AUDIO TOGGLE */}
+                <button
+                  onClick={() => { setAudioEnabled(!audioEnabled); if (!audioEnabled) playSound('success'); }}
+                  className={`ml-auto px-3.5 py-2 text-xs rounded-lg uppercase tracking-wider font-display font-semibold transition border flex items-center gap-1 ${
+                    audioEnabled ? 'bg-zinc-950 text-amber-500 border-amber-500/20' : 'bg-zinc-950 text-zinc-650 border-zinc-850'
+                  }`}
+                >
+                  🔊 {audioEnabled ? 'Sound On' : 'Silent'}
+                </button>
+              </section>
+
+              {/* VIEW SWITCHER */}
+              <div className="flex-1 overflow-y-auto p-6">
+                
+                {/* A. ordered grids */}
+                {activeTab === 'pos' && (
+                  <div className="flex flex-col gap-6">
+                    
+                    {/* FILTERS PANEL */}
+                    <div className="bg-zinc-900/40 border border-zinc-900 p-4 rounded-2xl flex flex-col md:flex-row gap-4 items-center justify-between">
+                      {/* Search */}
+                      <div className="relative w-full md:w-72">
+                        <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3.5" />
+                        <input 
+                          type="text" 
+                          placeholder="Search menu items..." 
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-red-600 transition"
+                        />
+                        {searchQuery && (
+                          <button onClick={() => setSearchQuery('')} className="absolute right-3 top-3.5 text-zinc-500 hover:text-zinc-300">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Categories list */}
+                      <div className="flex gap-1.5 p-1 bg-zinc-950 rounded-xl border border-zinc-850 select-none overflow-x-auto w-full md:w-auto">
+                        {(['All', 'Meals', 'Add-ons', 'Drinks'] as const).map(cat => (
+                          <button
+                            key={cat}
+                            onClick={() => { handleTactileClick(); setSelectedCategory(cat); }}
+                            className={`px-4 py-2 rounded-lg text-xs font-display uppercase tracking-wider font-semibold transition-all ${
+                              selectedCategory === cat 
+                                ? 'bg-zinc-900 text-white border border-zinc-850' 
+                                : 'text-zinc-500 hover:text-zinc-300'
+                            }`}
+                          >
+                            {cat === 'Meals' ? '🍱 ' : cat === 'Add-ons' ? '🍟 ' : cat === 'Drinks' ? '🥤 ' : ''}
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* MENUS bento grids */}
+                    {productsWithCategoriesAndFilters.length === 0 ? (
+                      <div className="text-center py-16 bg-zinc-900/10 rounded-3xl border border-dotted border-zinc-850">
+                        <p className="text-zinc-500 text-sm font-display uppercase tracking-wide">No active meals match your query.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                        {productsWithCategoriesAndFilters.map(p => {
+                          const qty = cart[p.id] || 0;
+                          return (
+                            <motion.div
+                              whileTap={{ scale: 0.97 }}
+                              onClick={() => addToCart(p.id)}
+                              key={p.id}
+                              className={`bg-zinc-900 border text-left p-4 rounded-2xl cursor-pointer transition relative overflow-hidden flex flex-col justify-between h-36 border-zinc-800 hover:border-zinc-700/80 hover:bg-zinc-850 ${
+                                qty > 0 ? 'ring-2 ring-red-500/80 ring-offset-2 ring-offset-zinc-950border-red-600/50' : ''
+                              }`}
+                            >
+                              <div className="flex items-start justify-between">
+                                <span className="text-3xl filter drop-shadow bg-zinc-950 w-11 h-11 rounded-xl flex items-center justify-center border border-zinc-850">{p.emoji}</span>
+                                {qty > 0 && (
+                                  <span className="bg-red-600 text-white text-[10px] font-mono font-bold w-6 h-6 rounded-lg flex items-center justify-center animate-bounce shadow">
+                                    {qty}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-4">
+                                <h4 className="text-xs font-display font-bold line-clamp-2 leading-snug tracking-wide uppercase text-zinc-100">
+                                  {p.name}
+                                </h4>
+                                <div className="flex items-center justify-between mt-1">
+                                  <span className="text-sm font-mono font-bold text-amber-500">₱{p.price}</span>
+                                  <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-display font-medium">
+                                    {p.category}
+                                  </span>
+                                </div>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* B. ADMIN: SALES ANALYSIS TAB */}
+                {activeTab === 'reports' && currentRole === 'admin' && (
+                  <div className="flex flex-col gap-6">
+                    
+                    {/* Header info */}
+                    <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                          Dashboard <span className="text-red-500">Analytics</span>
+                        </h2>
+                        <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                          Real-time orders parsing back to Supabase databases
+                        </p>
+                      </div>
+
+                      {/* Period tabs */}
+                      <div className="flex p-1 bg-zinc-900 rounded-xl border border-zinc-800 w-fit">
+                        {(['daily', 'weekly', 'monthly'] as const).map(p => (
+                          <button
+                            key={p}
+                            onClick={() => { handleTactileClick(); setReportPeriod(p); }}
+                            className={`px-4 py-1.5 rounded-lg text-[10px] font-display uppercase tracking-widest font-bold transition ${
+                              reportPeriod === p ? 'bg-red-650 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                            }`}
+                          >
+                            {p === 'daily' ? 'Today' : p === 'weekly' ? 'Week' : 'Month'}
+                          </button>
+                        ))}
+                      </div>
+                    </header>
+
+                    {/* Analytics grids */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
+                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💰 Total Revenue</span>
+                        <div className="text-2xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
+                        <p className="text-[10px] text-zinc-500 font-display mt-2">Combined orders value</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
+                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🧾 Ticket Volumes</span>
+                        <div className="text-2xl font-mono font-bold text-white">{analyticsData.totalOrders}</div>
+                        <p className="text-[10px] text-zinc-500 font-display mt-2">Transactions count</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
+                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💵 Cash Sales</span>
+                        <div className="text-2xl font-mono font-bold text-emerald-500">₱{analyticsData.cashRevenue.toLocaleString()}</div>
+                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.cashCount} Cash checkouts</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
+                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📱 GCash Sales</span>
+                        <div className="text-2xl font-mono font-bold text-blue-500">₱{analyticsData.gcashRevenue.toLocaleString()}</div>
+                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.gcashCount} QR scans</p>
+                      </article>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      
+                      {/* LEADERBOARD */}
+                      <div className="bg-zinc-900 border border-zinc-800/80 p-6 rounded-2xl col-span-1">
+                        <h4 className="text-xs uppercase font-display font-bold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4">
+                          🍱 Top Selling Products
+                        </h4>
+                        {bestSellersRankings.length === 0 ? (
+                          <p className="text-xs text-zinc-500 py-12 text-center uppercase tracking-wider font-display">No transactions records found.</p>
+                        ) : (
+                          <div className="flex flex-col gap-3">
+                            {bestSellersRankings.map((b, idx) => {
+                              const ratio = (b.qty / maxBestSellerQty) * 100;
+                              return (
+                                <div key={idx} className="flex flex-col gap-1.5">
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-semibold text-zinc-300 truncate w-4/5">#{idx+1} {b.name}</span>
+                                    <span className="font-mono font-bold text-amber-500">{b.qty} sold</span>
+                                  </div>
+                                  <div className="w-full h-2 bg-zinc-950 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full transition-all duration-500"
+                                      style={{ width: `${ratio}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* HISTORY FEED */}
+                      <div className="bg-zinc-900 border border-zinc-800/80 p-6 rounded-2xl col-span-1 lg:col-span-2">
+                        <h4 className="text-xs uppercase font-display font-bold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4 flex items-center justify-between">
+                          <span>📋 Shift Ledger History</span>
+                          <span className="text-[9px] tracking-normal font-mono font-light text-zinc-550 lowercase italic">Order limits showing latest {analyticsData.totalOrders}</span>
+                        </h4>
+
+                        {allOrders.length === 0 ? (
+                          <div className="py-12 text-center">
+                            <p className="text-xs text-zinc-500 font-display uppercase tracking-wider">No orders logged.</p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+                            {allOrders.map((itm, i) => {
+                              const orderDate = new Date(itm.created_at);
+                              const orderTime = orderDate.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+                              return (
+                                <div key={i} className="bg-zinc-950 border border-zinc-850 p-3.5 rounded-xl flex items-center justify-between gap-4">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-white text-xs font-mono font-bold">#{itm.order_number}</span>
+                                      <span className="text-[9px] uppercase tracking-widest font-display text-zinc-650 font-semibold">{itm.payment_method}</span>
+                                    </div>
+                                    <p className="text-[10px] text-zinc-500 font-display line-clamp-1 truncate uppercase">
+                                      {itm.items.join(', ')}
+                                    </p>
+                                  </div>
+                                  <div className="text-right flex-none">
+                                    <span className="font-mono font-bold text-amber-500 block text-xs">₱{itm.total}</span>
+                                    <span className="text-[9px] font-mono text-zinc-500 block mt-0.5">{orderTime}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+
+                {/* C. INVENTORY MANAGEMENT TAB */}
+                {activeTab === 'products' && currentRole === 'admin' && (
+                  <div className="flex flex-col gap-6">
+                    <header>
+                      <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                        Product <span className="text-red-500">Manager</span>
+                      </h2>
+                      <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                        Instantly deploy, adjust, or deactivate meals registers
+                      </p>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+                      
+                      {/* ADD PRODUCT FORM */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-2">
+                          ADD NEW DISH/DRINK
+                        </h4>
+                        
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Dish Title</label>
+                          <input 
+                            type="text" 
+                            placeholder="e.g. Java Rice + Lumpia Double" 
+                            value={newProdName}
+                            onChange={(e) => setNewProdName(e.target.value)}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-display text-zinc-200 placeholder-zinc-700 outline-none focus:border-amber-500 transition"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Unit Price (₱)</label>
+                            <input 
+                              type="number" 
+                              placeholder="e.g. 110" 
+                              value={newProdPrice}
+                              onChange={(e) => setNewProdPrice(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-amber-500 transition"
+                            />
+                          </div>
+                          
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Icon Emoji</label>
+                            <input 
+                              type="text" 
+                              value={newProdEmoji}
+                              onChange={(e) => setNewProdEmoji(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-center text-zinc-200 outline-none focus:border-amber-500 transition"
+                            />
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={triggerAddProduct}
+                          className="mt-2 w-full bg-red-600 hover:bg-red-700 text-xs font-display font-medium text-white p-3 rounded-xl transition uppercase tracking-wider font-bold shadow-lg shadow-red-600/15"
+                        >
+                          ➕ Add to active menu
+                        </button>
+                      </div>
+
+                      {/* PRODUCTS LIST */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl col-span-1 lg:col-span-2 flex flex-col gap-3">
+                        <h4 className="text-xs font-display font-bold uppercase tracking-widest text-zinc-300 border-b border-zinc-850 pb-2 mb-2 flex items-center justify-between">
+                          <span>📋 Interactive Menu List</span>
+                          <span className="text-[10px] font-mono font-medium text-zinc-600 uppercase">showing {products.length} active</span>
+                        </h4>
+
+                        <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
+                          {products.map(p => (
+                            <div key={p.id} className="bg-zinc-950/70 border border-zinc-850/50 hover:border-zinc-800 p-3 rounded-xl flex items-center justify-between gap-4 transition">
+                              <div className="flex items-center gap-3">
+                                <span className="bg-zinc-900 w-10 h-10 rounded-lg flex items-center justify-center text-xl border border-zinc-850">{p.emoji}</span>
+                                <div>
+                                  <h6 className="text-xs font-display font-bold uppercase tracking-wide text-zinc-200">{p.name}</h6>
+                                  <span className="text-[10px] font-mono text-zinc-550 block mt-0.5">₱{p.price}</span>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={() => triggerDeactivateProduct(p)}
+                                title="Deactivate/Erase product"
+                                className="p-2 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-lg border border-red-500/10 transition active:scale-95"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+
+                {/* D. CASHIER: PERSONAL SHIFT PROFILE */}
+                {activeTab === 'myshift' && currentRole === 'cashier' && (
+                  <div className="flex flex-col gap-6">
+                    <header>
+                      <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                        Cashier <span className="text-red-500">Shift</span>
+                      </h2>
+                      <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        Session Active Since {new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })}
+                      </p>
+                    </header>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      
+                      <article className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[10px] uppercase font-display font-bold tracking-widest block mb-1">💰 Today's Sales</span>
+                          <div className="text-3xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 mt-4 uppercase tracking-wider">Processed through your cashier credentials</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[10px] uppercase font-display font-bold tracking-widest block mb-1">🧾 Transaction Count</span>
+                          <div className="text-3xl font-mono font-bold text-white">{analyticsData.totalOrders}</div>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 mt-4 uppercase tracking-wider">Orders finalized today</p>
+                      </article>
+                    </div>
+
+                    <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                      <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-zinc-300 border-b border-zinc-850 pb-3 mb-4">
+                        Shift Order Log (Today)
+                      </h4>
+
+                      {allOrders.length === 0 ? (
+                        <p className="text-xs text-zinc-505 font-display uppercase tracking-wider text-center py-12">No sales logged during your shift today.</p>
+                      ) : (
+                        <div className="flex flex-col gap-2 max-h-80 overflow-y-auto">
+                          {allOrders.map((ord, idx) => {
+                            const dateObj = new Date(ord.created_at);
+                            const tStr = dateObj.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+                            return (
+                              <div key={idx} className="bg-zinc-950 p-3.5 rounded-xl flex items-center justify-between border border-zinc-850">
+                                <div>
+                                  <span className="font-mono font-bold text-xs">#{ord.order_number}</span>
+                                  <p className="text-[10px] text-zinc-500 mt-0.5 uppercase line-clamp-1">{ord.items.join(', ')}</p>
+                                </div>
+                                <div className="text-right">
+                                  <span className="font-mono font-bold text-amber-550 block text-xs">₱{ord.total}</span>
+                                  <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block">{tStr} · {ord.payment_method}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </main>
+
+            {/* RIGHT SIDEBAR: CART CONTAINER */}
+            <aside className="w-96 flex-none bg-zinc-900 border-l border-zinc-850 flex flex-col">
+              
+              {/* CART HEADER */}
+              <header className="flex-none p-5 border-b border-zinc-850/80 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShoppingCart className="w-4 h-4 text-red-500" />
+                  <h3 className="text-sm font-display font-bold uppercase tracking-wider text-zinc-100">
+                    Running Basket
+                  </h3>
+                  {totalItemCount > 0 && (
+                    <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">
+                      {totalItemCount}
+                    </span>
+                  )}
+                </div>
+
+                <button 
+                  onClick={clearEntireCart}
+                  disabled={totalItemCount === 0}
+                  className="text-[10px] font-display font-medium uppercase tracking-wider text-zinc-500 hover:text-red-500 transition disabled:opacity-30 disabled:hover:text-zinc-550 cursor-pointer"
+                >
+                  Clear all
+                </button>
+              </header>
+
+              {/* ITEMS SCROLLER */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                {totalItemCount === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center gap-2">
+                    <span className="text-4xl">🍱</span>
+                    <h5 className="text-xs uppercase font-display font-bold tracking-widest text-zinc-500">BASKET EMPTY</h5>
+                    <p className="text-[10px] text-zinc-650 max-w-[200px] leading-relaxed uppercase tracking-wide">
+                      Select dishes from the menu to populate this register invoice
+                    </p>
+                  </div>
+                ) : (
+                  Object.entries(cart).map(([pIdStr, qty]) => {
+                    const pid = parseInt(pIdStr);
+                    const prod = products.find(p => p.id === pid);
+                    if (!prod) return null;
+                    return (
+                      <div key={pid} className="bg-zinc-950 p-4 rounded-2xl border border-zinc-850/80 flex flex-col gap-3">
+                        <div className="flex items-start gap-3">
+                          <span className="text-xl bg-zinc-900 w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-850">{prod.emoji}</span>
+                          <div className="min-w-0 flex-1">
+                            <h5 className="text-[11px] font-display font-bold uppercase text-zinc-200 line-clamp-1 tracking-wide leading-none">{prod.name}</h5>
+                            <span className="text-[10px] font-mono text-zinc-500 mt-1 block">₱{prod.price}</span>
+                          </div>
+                          
+                          <button 
+                            onClick={() => directRemoveFromCart(pid)}
+                            className="text-zinc-600 hover:text-red-500 transition p-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="flex items-center justify-between border-t border-zinc-900/80 pt-2.5">
+                          <div className="flex items-center gap-1">
+                            <button 
+                              onClick={() => decrementCart(pid)}
+                              className="w-7 h-7 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg flex items-center justify-center border border-zinc-850 transition cursor-pointer"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <span className="w-8 text-center text-xs font-mono font-bold text-white">{qty}</span>
+                            <button 
+                              onClick={() => addToCart(pid)}
+                              className="w-7 h-7 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg flex items-center justify-center border border-zinc-850 transition cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
+
+                          <span className="font-mono font-bold text-amber-500 text-xs">₱{prod.price * qty}</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* ESTIMATE/PRICING SUMMARY */}
+              <section className="flex-none p-5 bg-zinc-955 border-t border-zinc-850 flex flex-col gap-4">
+                <div className="flex justify-between items-baseline">
+                  <span className="text-xs uppercase font-display tracking-widest text-zinc-500 font-semibold">Total Invoice</span>
+                  <span className="text-3xl font-mono font-black text-amber-500">₱{cartTotalAmount.toLocaleString()}</span>
+                </div>
+
+                <button 
+                  onClick={() => { handleTactileClick(); setChargeModalOpen(true); }}
+                  disabled={totalItemCount === 0}
+                  className="w-full py-4 rounded-2xl bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-display font-medium text-xs uppercase tracking-widest font-bold select-none transition-all cursor-pointer shadow-lg shadow-red-600/10 active:scale-[0.98]"
+                >
+                  💳 Charge Order (₱{cartTotalAmount})
+                </button>
+              </section>
+
+            </aside>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* ─── 3. OVERLAYS / CHECKOUT FLOW SUB MODALS ─── */}
+
+      {/* A. CHARGE OPTION DRAWER */}
+      <AnimatePresence>
+        {chargeModalOpen && (
+          <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative"
+            >
+              <button 
+                onClick={() => setChargeModalOpen(false)} 
+                className="absolute right-4 top-4 text-zinc-500 hover:text-zinc-300"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <h4 className="text-sm font-display font-extrabold uppercase tracking-widest text-zinc-300 mb-4 border-b border-zinc-800 pb-2">
+                Checkout Method
+              </h4>
+
+              {/* Mini receipt summary */}
+              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-850/80 mb-6 font-mono text-[11px] leading-relaxed">
+                <div className="text-center font-display font-black text-amber-500 text-xs uppercase mb-3 tracking-widest border-b border-zinc-900 pb-2">Boss Rice Order</div>
+                {Object.entries(cart).map(([pidStr, qty]) => {
+                  const p = products.find(x => x.id === parseInt(pidStr));
+                  if (!p) return null;
+                  return (
+                    <div key={pidStr} className="flex justify-between text-zinc-400 py-0.5">
+                      <span className="truncate uppercase max-w-[200px]">{p.name} x{qty}</span>
+                      <span>₱{p.price * qty}</span>
+                    </div>
+                  );
+                })}
+                <div className="border-t border-zinc-900 mt-3 pt-2.5 flex justify-between text-white font-bold text-xs uppercase">
+                  <span>Total Due</span>
+                  <span className="text-amber-500">₱{cartTotalAmount}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 font-display">
+                <button 
+                  onClick={() => selectPaymentOption('cash')}
+                  className="w-full p-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-2"
+                >
+                  <Coins className="w-4 h-4" /> 💵 Cash Payment (₱{cartTotalAmount})
+                </button>
+                <button 
+                  onClick={() => selectPaymentOption('gcash')}
+                  className="w-full p-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-2"
+                >
+                  <Smartphone className="w-4 h-4" /> 📱 GCash Instapay QR
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* B. GCASH HIGH FIDELITY SCAN FRAME MODAL */}
+      <AnimatePresence>
+        {gcashModalOpen && (
+          <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative text-center"
+            >
+              <button 
+                onClick={() => setGcashModalOpen(false)} 
+                className="absolute right-4 top-4 text-zinc-500 hover:text-zinc-300"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-blue-400 mb-4 flex items-center justify-center gap-1.5">
+                <Smartphone className="w-4 h-4 animate-pulse" /> GCash Transfer Station
+              </h4>
+
+              {/* ─── NATIVE GCASH / INSTAPAY CARD FRAMING REDESIGNED ─── */}
+              <div className="m-auto mb-6 max-w-sm rounded-[32px] overflow-hidden p-6 bg-[#005cee] shadow-2xl relative">
+                
+                {/* Top GCash Brand Logo */}
+                <div className="w-full flex justify-center mb-5 select-none">
+                  <svg viewBox="0 0 180 50" className="h-9 w-auto text-white fill-current" xmlns="http://www.w3.org/2000/svg">
+                    <g>
+                      {/* Circle with waves representing the G symbol */}
+                      <circle cx="20" cy="25" r="11" fill="white" />
+                      <path d="M20 5 A 20 20 0 0 1 38 34 A 20 20 0 0 1 23 45" fill="none" stroke="white" strokeWidth="4.5" strokeLinecap="round" />
+                      <path d="M20 -3 A 28 28 0 0 1 45 37 A 28 28 0 0 1 20 53" fill="none" stroke="white" strokeWidth="4.5" strokeLinecap="round" />
+                      {/* Clean font styling for GCash wordmark */}
+                      <text x="56" y="34" fontFamily="system-ui, -apple-system, sans-serif" fontWeight="900" fontSize="28" letterSpacing="-0.5px">GCash</text>
+                    </g>
+                  </svg>
+                </div>
+
+                {/* White Container Frame */}
+                <div className="bg-white rounded-[24px] p-6 pb-7 flex flex-col items-center select-none relative shadow-lg">
+                  
+                  {/* QR Image containing the dynamic code content from QRSERVER API */}
+                  <div className="w-56 h-56 bg-white rounded-2xl relative flex items-center justify-center border border-zinc-200/60 p-2 overflow-hidden">
+                    <img 
+                      src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=0&color=080808&bgcolor=ffffff&data=00020101021130630014ph.ppay.qrph01310014ph.ppay.qrph0215000000000000003520458125303608540555.005802PH5911BOSS%20RICE%206006MANILA62070703ABC6304CA12" 
+                      alt="GCash Scan QR Code" 
+                      className="w-full h-full object-contain"
+                      referrerPolicy="no-referrer"
+                    />
+                    
+                    {/* Floating Center Badge representing the logo "instaPay" as shown in the original image */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-2.5 py-1.5 rounded-lg shadow-lg border border-zinc-200/80 flex flex-col items-center justify-center min-w-[55px]">
+                      <span className="text-[7px] leading-none font-sans font-extrabold text-blue-700 tracking-tighter">insta</span>
+                      <span className="text-[7px] leading-none font-sans font-extrabold text-red-600 tracking-tighter mt-0.5">Pay</span>
+                      <div className="w-5 h-1.5 flex mt-1">
+                        <span className="flex-1 bg-blue-600 rounded-l" />
+                        <span className="flex-1 bg-red-600 rounded-r" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Footer fees warning */}
+                  <p className="text-[10px] text-zinc-400 font-sans tracking-wide mt-5">
+                    Transfer fees may apply.
+                  </p>
+
+                  {/* Account Name - exact matching letter spacing */}
+                  <h3 className="text-[#005cee] font-sans font-extrabold text-lg tracking-[0.10em] uppercase mt-3 select-text leading-none">
+                    ME****N G.
+                  </h3>
+
+                  {/* Mobile details (Philippine prefixes) */}
+                  <div className="text-zinc-400 font-sans font-normal text-[11px] tracking-wide mt-2">
+                    Mobile No.: <span className="font-semibold text-zinc-600 select-text">+63 992 422 ....</span>
+                  </div>
+
+                  {/* User Profile ID */}
+                  <div className="text-zinc-300 font-sans font-normal text-[10px] tracking-wide mt-1">
+                    User ID: <span className="font-medium text-zinc-500 select-text">..........5ENEEY</span>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Instructions list */}
+              <div className="bg-zinc-950 border border-zinc-850 p-4 rounded-2xl text-left text-xs mb-6 max-w-sm m-auto text-zinc-400 space-y-2">
+                <div className="flex gap-2"><span className="text-blue-500 font-bold">1.</span> <span>Launch the <strong>GCash Wallet application</strong> on customer's phone</span></div>
+                <div className="flex gap-2"><span className="text-blue-500 font-bold">2.</span> <span>Select <strong>Scan QR</strong> and hover over the terminal register screen</span></div>
+                <div className="flex gap-2"><span className="text-blue-500 font-bold">3.</span> <span>Send the exact amount: <strong className="text-amber-500 font-mono">₱{cartTotalAmount}</strong></span></div>
+              </div>
+
+              <div className="flex gap-3 justify-center max-w-sm m-auto font-display">
+                <button 
+                  onClick={() => setGcashModalOpen(false)} 
+                  className="flex-1 py-3 text-xs uppercase font-medium bg-zinc-800 text-zinc-400 hover:text-white rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={submitGcashCheckout}
+                  className="flex-[2] py-3 text-xs uppercase font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition shadow-lg shadow-blue-600/20"
+                >
+                  Confirm QR Paid ✓
+                </button>
+              </div>
+
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* C. CASH REGISTER CHANGER MODAL */}
+      <AnimatePresence>
+        {cashModalOpen && (
+          <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative"
+            >
+              <button 
+                onClick={() => setCashModalOpen(false)} 
+                className="absolute right-4 top-4 text-zinc-500 hover:text-zinc-300"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-emerald-500 mb-6 flex items-center gap-1">
+                💵 CASHIER CHARGERS
+              </h4>
+
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase tracking-widest font-display font-bold">Invoice Due</label>
+                  <p className="text-2xl font-mono font-bold text-white leading-none mt-1">₱{cartTotalAmount}</p>
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase tracking-widest font-display font-bold">Entered cash</label>
+                  <p className="text-2xl font-mono font-bold text-amber-500 leading-none mt-1">₱{cashReceivedText || '0'}</p>
+                </div>
+              </div>
+
+              {/* CHANGE DUE PANEL BAR COLOR BASED ON SUFFICIENCY */}
+              <div className={`p-4 rounded-xl text-center border mb-4 font-display transition-colors ${
+                !cashReceivedText 
+                  ? 'bg-zinc-950 border-zinc-850 text-zinc-650' 
+                  : computedChangeDue < 0 
+                    ? 'bg-red-500/10 border-red-500/20 text-red-400' 
+                    : computedChangeDue === 0 
+                      ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' 
+                      : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+              }`}>
+                <span className="text-[9px] uppercase tracking-widest font-bold block mb-1">
+                  {!cashReceivedText ? 'WAITING FOR CASH AMOUNT' : computedChangeDue < 0 ? 'SHORT BALANCE DUE' : computedChangeDue === 0 ? 'EXACT AMOUNT PROVIDED' : 'CHANGE DUE CUSTOMER'}
+                </span>
+                <span className="text-3xl font-mono font-black block leading-none">
+                  {!cashReceivedText ? '—' : computedChangeDue < 0 ? `₱${Math.abs(computedChangeDue)}` : `₱${computedChangeDue}`}
+                </span>
+              </div>
+
+              {/* CASH NUMERIC REGISTERS */}
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(n => (
+                  <button 
+                    key={n} 
+                    onClick={() => handleCashNumpadInput(n)}
+                    className="py-3 rounded-lg bg-zinc-950 border border-zinc-850 hover:bg-zinc-800 font-mono text-base font-bold text-zinc-200 transition active:scale-95"
+                  >
+                    {n}
+                  </button>
+                ))}
+                <button onClick={() => handleCashNumpadInput('del')} className="py-3 rounded-lg bg-zinc-950 border border-zinc-850 hover:bg-zinc-800 text-xs text-red-500 font-display font-semibold uppercase tracking-wider transition active:scale-95">⌫</button>
+                <button onClick={() => handleCashNumpadInput('0')} className="py-3 rounded-lg bg-zinc-950 border border-zinc-850 hover:bg-zinc-800 font-mono text-base font-bold text-zinc-200 transition active:scale-95">0</button>
+                <button onClick={() => handleCashNumpadInput('exact')} className="py-3 rounded-lg bg-zinc-950 border border-zinc-850 hover:bg-zinc-850 text-xs text-amber-550 font-display font-semibold uppercase tracking-wider transition active:scale-95">Exact</button>
+              </div>
+
+              {/* QUICK NOMINAL PRESETS BILLS (Philippines currency typical weights) */}
+              <div className="flex gap-1.5 mb-6 justify-between select-none font-mono">
+                {[50, 100, 200, 500, 1000].map(bill => (
+                  <button
+                    key={bill}
+                    onClick={() => handleCashQuickAdd(bill)}
+                    className="flex-1 py-2 text-[10px] font-bold rounded-lg bg-zinc-950 border border-zinc-900 text-zinc-400 hover:text-white transition hover:bg-zinc-850 active:scale-95"
+                  >
+                    +{bill}
+                  </button>
+                ))}
+              </div>
+
+              <button 
+                disabled={!cashPayActive}
+                onClick={submitCashCheckout}
+                className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-display font-bold text-xs uppercase tracking-wider transition shadow-lg"
+              >
+                💵 Confirm Payment ✓
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* D. RECEIPT REPLICA THERMAL STYLE SHEET MODAL */}
+      <AnimatePresence>
+        {receiptModalOpen && activeReceiptOrder && (
+          <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative"
+            >
+              <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-emerald-500 text-center mb-4 flex items-center justify-center gap-1.5">
+                <Check className="p-0.5 rounded bg-emerald-500/20 text-emerald-400 w-4 h-4" /> Order Finalized
+              </h4>
+
+              {/* THERMAL PAPER BACKGROUND STYLE */}
+              <div className="bg-white text-zinc-900 p-6 rounded-2xl shadow-inner font-mono text-[11px] leading-relaxed relative overflow-hidden flex flex-col mb-6">
+                
+                {/* Simulated edge cut lines */}
+                <div className="absolute top-0 left-0 right-0 h-1 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-300 to-transparent bg-repeat-x flex" />
+
+                <header className="text-center mb-4 pb-2 border-b-2 border-dashed border-zinc-300">
+                  <h3 className="font-display font-black text-xl text-red-600 tracking-tight leading-none uppercase">BOSS RICE</h3>
+                  <p className="text-[8px] font-sans text-zinc-500 tracking-wider uppercase m-0 mt-0.5">Original Garlic Java Comforts</p>
+                  <p className="text-[8px] text-zinc-400 font-sans tracking-wide mt-1 leading-none">
+                    {new Date(activeReceiptOrder.created_at).toLocaleString('en-PH', { dateStyle: 'short', timeStyle: 'short' })}
+                  </p>
+                </header>
+
+                <div className="flex justify-between font-bold mb-2">
+                  <span>TERM RES: #{activeReceiptOrder.order_number}</span>
+                  <span className="uppercase text-right">{activeReceiptOrder.cashier_role}</span>
+                </div>
+
+                <div className="space-y-1 py-2 border-b border-dashed border-zinc-200">
+                  {activeReceiptOrder.items.map((itemStr: string, index: number) => (
+                    <div key={index} className="flex justify-between uppercase">
+                      <span>{itemStr}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="py-2 space-y-1.5">
+                  <div className="flex justify-between text-xs font-bold font-sans uppercase">
+                    <span>Invoice Total</span>
+                    <span>₱{activeReceiptOrder.total}</span>
+                  </div>
+                  <div className="flex justify-between text-zinc-500 uppercase">
+                    <span>Payment Method</span>
+                    <span>{activeReceiptOrder.payment_method}</span>
+                  </div>
+                  {activeReceiptOrder.payment_method === 'Cash' && (
+                    <>
+                      <div className="flex justify-between text-zinc-500 uppercase">
+                        <span>Paid Cash</span>
+                        <span>₱{activeReceiptOrder.cash_received}</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-600 font-bold uppercase">
+                        <span>Change Returned</span>
+                        <span>₱{activeReceiptOrder.change_given}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <footer className="text-center mt-6 pt-3 border-t-2 border-dashed border-zinc-300">
+                  <p className="m-0 text-[9px] uppercase font-sans font-bold text-zinc-500">Thank you for dining at Boss Rice! 🍱</p>
+                  <p className="m-0 text-[8px] text-zinc-450 font-sans tracking-wider mt-1">Please come back again</p>
+                </footer>
+              </div>
+
+              <button 
+                onClick={closeReceiptAndAdvance}
+                className="w-full py-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-display font-bold text-xs uppercase tracking-widest transition"
+              >
+                ✓ Complete & New Order
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}

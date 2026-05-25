@@ -1,0 +1,6 @@
+{
+  "name": "Boss Rice POS",
+  "description": "A premium, high-performance Point of Sale (POS) system for Boss Rice, featuring seamless sales analytics, real-time sync, and digital payment integrations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
