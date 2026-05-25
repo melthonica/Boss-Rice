@@ -127,6 +127,7 @@ export default function BossRicePOS() {
   const [shiftBegBalance, setShiftBegBalance] = useState<string>('1000');
   const [shiftBranch, setShiftBranch] = useState<string>('Main Branch');
   const [customBranchText, setCustomBranchText] = useState<string>('');
+  const [ordersTableName, setOrdersTableName] = useState<'orders' | 'pos_orders'>('pos_orders');
 
   // --- STAFFING MANAGEMENT ---
   const [newStaffUsername, setNewStaffUsername] = useState('');
@@ -243,6 +244,20 @@ export default function BossRicePOS() {
     setSyncStatus('syncing');
     setIsInitializing(true);
     try {
+      // Auto-detect whether 'pos_orders' or 'orders' table is available
+      try {
+        const { error: testErr } = await supabase.from('pos_orders').select('id').limit(1);
+        if (!testErr) {
+          setOrdersTableName('pos_orders');
+          console.log('Using pos_orders as the active orders table');
+        } else {
+          setOrdersTableName('orders');
+          console.log('pos_orders failed testing, using fallback orders table');
+        }
+      } catch (e) {
+        setOrdersTableName('orders');
+      }
+
       // Fetch products
       const { data: remoteProds, error: prodErr } = await supabase
         .from('products')
@@ -303,16 +318,41 @@ export default function BossRicePOS() {
       }
 
       const { data, error } = await supabase
-        .from('orders')
+        .from(ordersTableName)
         .select('*')
         .gte('created_at', start.toISOString())
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      const items = data || [];
-      setAllOrders(items);
-      localStorage.setItem(`br_orders_${period}`, JSON.stringify(items));
+      const rawItems = data || [];
+      const mappedItems = rawItems.map((row: any) => ({
+        ...row,
+        order_number: isNaN(Number(row.order_number)) ? row.order_number : Number(row.order_number),
+        cashier_role: row.cashier_role || `${row.cashier_name || 'cashier'} | ${row.branch || 'Main Branch'}`,
+        cash_received: row.cash_received !== undefined ? row.cash_received : row.total,
+        change_given: row.change_given !== undefined ? row.change_given : 0
+      }));
+
+      // Merge mapped items with any unsynced or extremely fresh local items not yet in the DB response
+      setAllOrders(prev => {
+        const merged = [...mappedItems];
+        prev.forEach(pOrder => {
+          const alreadyExists = merged.some(m => 
+            (m.id && m.id === pOrder.id) || 
+            (m.order_number === pOrder.order_number && m.created_at.substring(0, 16) === pOrder.created_at.substring(0, 16))
+          );
+          if (!alreadyExists && !pOrder.id) {
+            // It is a very fresh local/unsynced order, preserve it
+            merged.push(pOrder);
+          }
+        });
+        // Re-sort descendants by date
+        merged.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        return merged;
+      });
+
+      localStorage.setItem(`br_orders_${period}`, JSON.stringify(mappedItems));
       setSyncStatus('online');
     } catch (err) {
       setSyncStatus('offline');
@@ -479,12 +519,40 @@ export default function BossRicePOS() {
       setEnteredPin('');
 
       if (matchedUser.role === 'cashier') {
-        // Trigger cashier register opening parameters modal setup
+        // Authenticate the cashier and enter the active POS workspace immediately
+        setCurrentUser(matchedUser);
+        setCurrentRole('cashier');
+        setActiveTab('pos');
         setTempUser(matchedUser);
-        setShiftBegBalance('1000');
-        setShiftBranch('Main Branch');
-        setCustomBranchText('');
-        setIsShiftOverlayOpen(true);
+
+        // Check if there is an active shift cached in localStorage
+        const cachedActiveShift = localStorage.getItem('br_active_shift');
+        if (cachedActiveShift) {
+          try {
+            const parsedShift = JSON.parse(cachedActiveShift);
+            setMyActiveShift(parsedShift);
+            setIsShiftOverlayOpen(false);
+          } catch (e) {
+            setMyActiveShift(null);
+            setShiftBegBalance('1000');
+            setShiftBranch('Main Branch');
+            setCustomBranchText('');
+            setIsShiftOverlayOpen(true);
+          }
+        } else {
+          setMyActiveShift(null);
+          setShiftBegBalance('1000');
+          setShiftBranch('Main Branch');
+          setCustomBranchText('');
+          setIsShiftOverlayOpen(true);
+        }
+
+        localStorage.setItem('br_session_v1', JSON.stringify({ 
+          role: 'cashier', 
+          user: matchedUser, 
+          shift: cachedActiveShift ? JSON.parse(cachedActiveShift) : null,
+          time: Date.now() 
+        }));
       } else {
         setCurrentUser(matchedUser);
         setCurrentRole('admin');
@@ -515,7 +583,8 @@ export default function BossRicePOS() {
 
   // --- SHIFT CREATION ACTIVATOR ---
   const startShift = async () => {
-    if (!tempUser) return;
+    const activeStaff = tempUser || currentUser;
+    if (!activeStaff) return;
     const begBal = parseFloat(shiftBegBalance || '0');
     if (isNaN(begBal) || begBal < 0) {
       showNotification('Please enter a valid beginning balance.');
@@ -526,7 +595,7 @@ export default function BossRicePOS() {
     const finalBranch = assignedBranch.trim() || 'Main Branch';
 
     const newShiftRecord: Shift = {
-      cashier_name: tempUser.username,
+      cashier_name: activeStaff.username,
       branch: finalBranch,
       beginning_balance: begBal,
       total_sales: 0,
@@ -543,7 +612,7 @@ export default function BossRicePOS() {
 
       if (error) throw error;
       const savedShift = data || newShiftRecord;
-      setCurrentUser(tempUser);
+      setCurrentUser(activeStaff);
       setCurrentRole('cashier');
       setMyActiveShift(savedShift);
       setIsShiftOverlayOpen(false);
@@ -552,7 +621,7 @@ export default function BossRicePOS() {
       localStorage.setItem('br_active_shift', JSON.stringify(savedShift));
       localStorage.setItem('br_session_v1', JSON.stringify({ 
         role: 'cashier', 
-        user: tempUser, 
+        user: activeStaff, 
         shift: savedShift,
         time: Date.now() 
       }));
@@ -562,7 +631,7 @@ export default function BossRicePOS() {
       syncShifts();
     } catch (e) {
       console.warn('DB Shift log failed, proceeding with local fallback: ', e);
-      setCurrentUser(tempUser);
+      setCurrentUser(activeStaff);
       setCurrentRole('cashier');
       setMyActiveShift(newShiftRecord);
       setIsShiftOverlayOpen(false);
@@ -571,7 +640,7 @@ export default function BossRicePOS() {
       localStorage.setItem('br_active_shift', JSON.stringify(newShiftRecord));
       localStorage.setItem('br_session_v1', JSON.stringify({ 
         role: 'cashier', 
-        user: tempUser, 
+        user: activeStaff, 
         shift: newShiftRecord,
         time: Date.now() 
       }));
@@ -593,7 +662,7 @@ export default function BossRicePOS() {
       onConfirm: async () => {
         setSyncStatus('syncing');
         try {
-          const { error } = await supabase.from('orders').delete().eq('id', orderId);
+          const { error } = await supabase.from(ordersTableName).delete().eq('id', orderId);
           if (error) throw error;
           showNotification(`Order #${orderNum} deleted successfully.`);
           syncOrders(reportPeriod);
@@ -818,7 +887,7 @@ export default function BossRicePOS() {
     setSyncStatus('syncing');
     try {
       if (orderToVoid.id) {
-        const { error } = await supabase.from('orders').delete().eq('id', orderToVoid.id);
+        const { error } = await supabase.from(ordersTableName).delete().eq('id', orderToVoid.id);
         if (error) throw error;
       }
 
@@ -1001,8 +1070,26 @@ export default function BossRicePOS() {
       }
     }
 
+    // Append the newly created order directly to client state for instant feedback without network roundtrip lag
+    setAllOrders(prev => {
+      if (prev.some(o => o.order_number === newOrderRecord.order_number && o.created_at === newOrderRecord.created_at)) {
+        return prev;
+      }
+      return [newOrderRecord, ...prev];
+    });
+
+    const insertPayload = ordersTableName === 'pos_orders' ? {
+      order_number: String(newOrderRecord.order_number),
+      items: newOrderRecord.items,
+      total: newOrderRecord.total,
+      payment_method: newOrderRecord.payment_method,
+      cashier_name: newOrderRecord.cashier_name,
+      branch: newOrderRecord.branch,
+      created_at: newOrderRecord.created_at
+    } : newOrderRecord;
+
     try {
-      const { error } = await supabase.from('orders').insert([newOrderRecord]);
+      const { error } = await supabase.from(ordersTableName).insert([insertPayload]);
       if (error) throw error;
       setSyncStatus('online');
     } catch (e) {
@@ -1952,21 +2039,27 @@ export default function BossRicePOS() {
                             const tStr = dateObj.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
                             return (
                               <div key={idx} className="bg-zinc-950 p-3.5 rounded-xl flex items-center justify-between border border-zinc-850 gap-4">
-                                <div className="min-w-0">
-                                  <span className="font-mono font-bold text-xs text-white">#{ord.order_number}</span>
-                                  <span className="text-[8px] uppercase tracking-wider font-mono bg-zinc-900 border border-zinc-850 px-1 ml-2 text-zinc-500">{ord.payment_method}</span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-mono font-bold text-xs text-white">#{ord.order_number}</span>
+                                    <span className="text-[8px] uppercase tracking-wider font-mono bg-zinc-900 border border-zinc-850 px-1.5 py-0.5 text-zinc-400 rounded">{ord.payment_method}</span>
+                                    <span className="text-[8px] uppercase tracking-wider font-mono bg-emerald-950/40 border border-emerald-900/30 px-1.5 py-0.5 text-emerald-400 rounded font-semibold flex items-center gap-1 shadow-sm leading-none">
+                                      <span className="w-1 h-1 rounded-full bg-emerald-400 shrink-0" /> PAID
+                                    </span>
+                                  </div>
                                   <p className="text-[10px] text-zinc-500 mt-1 uppercase line-clamp-1">{ord.items.join(', ')}</p>
                                 </div>
-                                <div className="text-right flex items-center gap-3 flex-none">
+                                <div className="text-right flex items-center gap-3.5 flex-none">
                                   <div>
                                     <span className="font-mono font-bold text-amber-550 block text-xs">₱{ord.total}</span>
                                     <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block">{tStr}</span>
                                   </div>
                                   <button
                                     onClick={() => triggerVoidRequest(ord)}
-                                    className="p-1.5 px-3 bg-red-950/20 hover:bg-red-600 border border-red-900/30 hover:border-red-500 text-red-400 hover:text-white rounded-lg text-[9px] uppercase tracking-wider font-bold transition flex items-center gap-1 active:scale-95 duration-200"
+                                    title="Authorize Void for this Transaction"
+                                    className="p-1.5 px-3 bg-zinc-900 hover:bg-red-950/30 border border-zinc-800 hover:border-red-900/60 text-zinc-400 hover:text-red-400 rounded-lg text-[9px] uppercase tracking-widest font-bold transition flex items-center gap-1 active:scale-95 duration-200"
                                   >
-                                    <AlertTriangle className="w-3 h-3" /> Void
+                                    <AlertTriangle className="w-3 h-3 text-zinc-500 hover:text-red-400" /> Void
                                   </button>
                                 </div>
                               </div>
@@ -2501,10 +2594,17 @@ export default function BossRicePOS() {
               {/* ACTION BUTTONS */}
               <div className="flex gap-3 mt-2">
                 <button
-                  onClick={() => { handleTactileClick(); setIsShiftOverlayOpen(false); setTempUser(null); }}
-                  className="flex-1 py-3 bg-zinc-955 border border-zinc-850 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-xl text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer"
+                  onClick={() => { 
+                    handleTactileClick(); 
+                    setIsShiftOverlayOpen(false); 
+                    setTempUser(null); 
+                    if (!myActiveShift) {
+                      attemptLogout();
+                    }
+                  }}
+                  className="flex-1 py-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-xl text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer text-center"
                 >
-                  Cancel
+                  Cancel / Logout
                 </button>
                 <button
                   onClick={() => { handleTactileClick(); startShift(); }}
@@ -2796,6 +2896,173 @@ export default function BossRicePOS() {
               >
                 ✓ Complete & New Order
               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* E. ADMIN PIN AUTHORIZATION FOR VOIDING ORDERS */}
+      <AnimatePresence>
+        {isVoidAuthOpen && orderToVoid && (
+          <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative"
+            >
+              <button 
+                onClick={() => {
+                  setIsVoidAuthOpen(false);
+                  setOrderToVoid(null);
+                  setAdminVoidPin('');
+                  setVoidAuthError('');
+                  handleTactileClick();
+                }} 
+                className="absolute right-4 top-4 text-zinc-550 hover:text-zinc-350 transition active:scale-95"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-500 mb-4">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <h4 className="text-sm font-display font-extrabold tracking-widest text-red-500 uppercase">
+                  SECURITY AUTHORIZATION
+                </h4>
+                <p className="text-[10px] uppercase font-mono tracking-wider text-zinc-500 mt-1">
+                  ADMIN SECURITY PRIVILEGE REQUIRED
+                </p>
+              </div>
+
+              {/* Order summary info inside keycard */}
+              <div className="bg-zinc-950 p-4 rounded-2xl border border-zinc-850 my-5 text-left">
+                <div className="flex justify-between items-center pb-2 border-b border-zinc-850">
+                  <span className="font-mono text-xs font-bold text-white">Order #{orderToVoid.order_number}</span>
+                  <span className="font-mono text-xs font-bold text-amber-550">₱{orderToVoid.total}</span>
+                </div>
+                <div className="pt-2 text-[10px] text-zinc-500 space-y-1">
+                  <div className="flex justify-between">
+                    <span>Payment:</span>
+                    <span className="uppercase text-zinc-400 font-semibold">{orderToVoid.payment_method}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Cashier:</span>
+                    <span className="truncate text-zinc-455">{orderToVoid.cashier_name || 'cashier'}</span>
+                  </div>
+                  <div className="text-[9px] uppercase tracking-wide text-zinc-650 font-sans line-clamp-1 truncate mt-1">
+                    {orderToVoid.items.join(', ')}
+                  </div>
+                </div>
+              </div>
+
+              {/* Secure PIN feedback dots */}
+              <div className="text-center mb-5">
+                <div className="flex justify-center gap-3.5 mb-2.5">
+                  {[0, 1, 2, 3].map((idx) => (
+                    <div 
+                      key={idx}
+                      className={`w-3.5 h-3.5 rounded-full border-2 transition-all duration-155 ${
+                        adminVoidPin.length > idx 
+                          ? 'bg-red-500 border-red-500 scale-110 shadow-md shadow-red-500/40' 
+                          : 'bg-zinc-950 border-zinc-800'
+                      }`}
+                    />
+                  ))}
+                </div>
+                <p className="text-[9px] font-mono uppercase tracking-widest text-zinc-550">
+                  {adminVoidPin.length === 0 ? 'ENTER 4-DIGIT PIN' : `${adminVoidPin.length} OF 4 DIGITS ENTERED`}
+                </p>
+              </div>
+
+              {/* Error alerts */}
+              {voidAuthError && (
+                <div className="p-2.5 mb-4 rounded-xl bg-red-500/10 border border-red-500/20 text-center text-red-500 font-mono text-[10px] uppercase font-bold tracking-wide animate-pulse">
+                  {voidAuthError}
+                </div>
+              )}
+
+              {/* Admin PIN input numeric keypad */}
+              <div className="grid grid-cols-3 gap-2 mb-5">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(n => (
+                  <button 
+                    key={n} 
+                    onClick={() => {
+                      handleTactileClick();
+                      setVoidAuthError('');
+                      setAdminVoidPin(prev => {
+                        if (prev.length < 4) return prev + n;
+                        return prev;
+                      });
+                    }}
+                    className="py-3.5 rounded-xl bg-zinc-950 hover:bg-zinc-850 border border-zinc-850 hover:border-zinc-750 font-mono text-base font-bold text-zinc-200 transition active:scale-95 duration-100"
+                  >
+                    {n}
+                  </button>
+                ))}
+                
+                <button 
+                  onClick={() => {
+                    handleTactileClick();
+                    setVoidAuthError('');
+                    setAdminVoidPin('');
+                  }} 
+                  className="py-3.5 rounded-xl bg-zinc-950 hover:bg-zinc-850 border border-zinc-850 text-[10px] font-display font-semibold text-zinc-500 hover:text-zinc-350 tracking-wider uppercase transition active:scale-95"
+                >
+                  Clear
+                </button>
+                
+                <button 
+                  key="0"
+                  onClick={() => {
+                    handleTactileClick();
+                    setVoidAuthError('');
+                    setAdminVoidPin(prev => {
+                      if (prev.length < 4) return prev + '0';
+                      return prev;
+                    });
+                  }}
+                  className="py-3.5 rounded-xl bg-zinc-950 hover:bg-zinc-850 border border-zinc-850 hover:border-zinc-750 font-mono text-base font-bold text-zinc-200 transition active:scale-95 duration-100"
+                >
+                  0
+                </button>
+                
+                <button 
+                  onClick={() => {
+                    handleTactileClick();
+                    setVoidAuthError('');
+                    setAdminVoidPin(prev => prev.slice(0, -1));
+                  }} 
+                  className="py-3.5 rounded-xl bg-zinc-950 hover:bg-zinc-850 border border-zinc-850 hover:border-red-900/30 text-[11px] font-sans font-black text-red-400 hover:text-red-350 transition active:scale-95"
+                  title="Delete/Backspace"
+                >
+                  ⌫
+                </button>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => {
+                    setIsVoidAuthOpen(false);
+                    setOrderToVoid(null);
+                    setAdminVoidPin('');
+                    setVoidAuthError('');
+                    handleTactileClick();
+                  }} 
+                  className="flex-1 py-3 text-xs font-display font-bold uppercase tracking-wider text-zinc-400 hover:text-white bg-zinc-950 border border-zinc-850 hover:bg-zinc-850 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button 
+                  disabled={adminVoidPin.length !== 4}
+                  onClick={handleAuthorizeVoid}
+                  className="flex-1 py-3 text-xs font-display font-bold uppercase tracking-wider text-white bg-red-650 hover:bg-red-750 disabled:bg-zinc-800 disabled:text-zinc-650 rounded-xl transition shadow-lg shadow-red-955/20 active:scale-95"
+                >
+                  Confirm Void
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
