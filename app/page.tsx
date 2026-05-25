@@ -144,8 +144,11 @@ export default function BossRicePOS() {
   // --- GLOBAL SHIFTS & STATIONS LEDGER ---
   const [shifts, setShifts] = useState<Shift[]>([]);
 
-  // --- DAILY REPORT EXPORTS ---
-  const [selectedReportDate, setSelectedReportDate] = useState<string>(
+  // --- DAILY REPORT RANGE EXPORTS (FROM & TO) ---
+  const [startDateFilter, setStartDateFilter] = useState<string>(
+    new Date().toLocaleDateString('sv').substring(0, 10) // local YYYY-MM-DD
+  );
+  const [endDateFilter, setEndDateFilter] = useState<string>(
     new Date().toLocaleDateString('sv').substring(0, 10) // local YYYY-MM-DD
   );
 
@@ -155,8 +158,9 @@ export default function BossRicePOS() {
   const [adminVoidPin, setAdminVoidPin] = useState<string>('');
   const [voidAuthError, setVoidAuthError] = useState<string>('');
 
-  // --- PRODUCT IN-LINE PRICE EDITING ---
+  // --- PRODUCT IN-LINE EDITING (NAME & PRICE) ---
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [editingProductName, setEditingProductName] = useState<string>('');
   const [editingProductPrice, setEditingProductPrice] = useState<string>('');
 
   // --- Core POS STATE ---
@@ -172,7 +176,7 @@ export default function BossRicePOS() {
 
   // --- ACTIVE VIEWS / TAB ---
   const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift' | 'staff' | 'shifts' | 'expenses'>('pos');
-  const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>('daily');
 
   // --- NOTIFICATION / TOAST ---
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -303,25 +307,36 @@ export default function BossRicePOS() {
   };
 
   // --- FETCH HISTORIC ORDERS ---
-  const syncOrders = async (period: 'daily' | 'weekly' | 'monthly') => {
+  const syncOrders = async (period: 'daily' | 'weekly' | 'monthly' | 'custom') => {
     setSyncStatus('syncing');
     try {
       let start = new Date();
+      let endISO: string | null = null;
       if (period === 'daily') {
         start.setHours(0, 0, 0, 0);
       } else if (period === 'weekly') {
         const day = start.getDay();
         start.setDate(start.getDate() - day);
         start.setHours(0,0,0,0);
-      } else {
+      } else if (period === 'monthly') {
         start = new Date(start.getFullYear(), start.getMonth(), 1);
+        start.setHours(0, 0, 0, 0);
+      } else if (period === 'custom') {
+        start = new Date(startDateFilter + 'T00:00:00');
+        const endDayObj = new Date(endDateFilter + 'T23:59:59');
+        endISO = endDayObj.toISOString();
       }
 
-      const { data, error } = await supabase
+      let qBuilder = supabase
         .from(ordersTableName)
         .select('*')
-        .gte('created_at', start.toISOString())
-        .order('created_at', { ascending: false });
+        .gte('created_at', start.toISOString());
+
+      if (endISO) {
+        qBuilder = qBuilder.lte('created_at', endISO);
+      }
+
+      const { data, error } = await qBuilder.order('created_at', { ascending: false });
 
       if (error) throw error;
 
@@ -355,6 +370,7 @@ export default function BossRicePOS() {
       localStorage.setItem(`br_orders_${period}`, JSON.stringify(mappedItems));
       setSyncStatus('online');
     } catch (err) {
+      console.error('syncOrders error:', err);
       setSyncStatus('offline');
       const cache = localStorage.getItem(`br_orders_${period}`);
       if (cache) setAllOrders(JSON.parse(cache));
@@ -651,6 +667,10 @@ export default function BossRicePOS() {
 
   // --- RECORD DELETE OPERATIONS ---
   const deleteOrder = async (orderId?: number, orderNum?: number) => {
+    if (currentRole !== 'admin') {
+      showNotification('Access Denied: Administrator access level required.');
+      return;
+    }
     if (!orderId) {
       showNotification('Unable to delete offline item draft.');
       return;
@@ -677,35 +697,36 @@ export default function BossRicePOS() {
   };
 
   // --- REPORT EXPORT ENGINE (CSV) ---
-  const handleExportCSV = (targetDate: string) => {
-    const dailySubset = allOrders.filter(o => {
-      const parts = o.created_at.split('T');
-      return parts[0] === targetDate;
+  const handleExportCSV = () => {
+    const subset = allOrders.filter(o => {
+      if (!o.created_at) return false;
+      const oDateStr = o.created_at.substring(0, 10);
+      return oDateStr >= startDateFilter && oDateStr <= endDateFilter;
     });
 
-    if (dailySubset.length === 0) {
-      showNotification(`No completed orders logged on ${targetDate} to export.`);
+    if (subset.length === 0) {
+      showNotification(`No completed orders logged between ${startDateFilter} and ${endDateFilter} to export.`);
       return;
     }
 
     // Build standard high-quality CSV
     let csvStr = "\uFEFF"; // Byte-order mark for Excel compatibility
-    csvStr += `"BOSS RICE DAILY SALES REPORT"\n`;
-    csvStr += `"Selected Date:","${targetDate}"\n`;
+    csvStr += `"BOSS RICE SALES REPORT"\n`;
+    csvStr += `"Selected Date Range:","${startDateFilter} to ${endDateFilter}"\n`;
     csvStr += `"Generated Time:","${new Date().toLocaleTimeString('en-PH')}"\n\n`;
     
     csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Total Val (PHP)","Cash Received","Change Returned","Payment Channel"\n`;
     
     let sumTotalSales = 0;
-    dailySubset.forEach(o => {
+    subset.forEach(o => {
       const rawText = o.items.join('; ').replace(/"/g, '""');
-      const timeString = new Date(o.created_at).toLocaleTimeString('en-PH', { hour12: false });
+      const timeString = new Date(o.created_at).toLocaleString('en-PH', { hour12: false });
       csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}",${o.total},${o.cash_received || 0},${o.change_given || 0},"${o.payment_method}"\n`;
       sumTotalSales += o.total;
     });
 
     csvStr += `\n"SUMMARY METRICS"\n`;
-    csvStr += `"Total Volume Count:",${dailySubset.length}\n`;
+    csvStr += `"Total Volume Count:",${subset.length}\n`;
     csvStr += `"Gross Operational Revenues PHP:",${sumTotalSales}\n`;
 
     // Dynamic click triggers browser downloader
@@ -713,17 +734,22 @@ export default function BossRicePOS() {
     const localUrl = URL.createObjectURL(blobObj);
     const hiddenLink = document.createElement("a");
     hiddenLink.setAttribute("href", localUrl);
-    hiddenLink.setAttribute("download", `Boss_Rice_Sales_Report_${targetDate}.csv`);
+    hiddenLink.setAttribute("download", `Boss_Rice_Sales_Report_${startDateFilter}_to_${endDateFilter}.csv`);
     document.body.appendChild(hiddenLink);
     hiddenLink.click();
     document.body.removeChild(hiddenLink);
 
-    showNotification(`Sales spreadsheet for ${targetDate} exported!`);
+    showNotification(`Sales spreadsheet for ${startDateFilter} to ${endDateFilter} exported!`);
     if (audioEnabled) playSound('success');
   };
 
-  // --- PRODUCT MANAGEMENT PRICE EDITOR ---
-  const handleUpdateProductPrice = async (pId: number) => {
+  // --- PRODUCT MANAGEMENT EDITOR (NAME & PRICE) ---
+  const handleUpdateProduct = async (pId: number) => {
+    const trimmedName = editingProductName.trim();
+    if (!trimmedName) {
+      showNotification('Please enter a valid product name');
+      return;
+    }
     const rawVal = parseFloat(editingProductPrice);
     if (isNaN(rawVal) || rawVal <= 0) {
       showNotification('Please enter a valid price greater than ₱0');
@@ -734,23 +760,25 @@ export default function BossRicePOS() {
     try {
       const { error } = await supabase
         .from('products')
-        .update({ price: rawVal })
+        .update({ name: trimmedName, price: rawVal })
         .eq('id', pId);
 
       if (error) throw error;
-      setProducts(prev => prev.map(p => p.id === pId ? { ...p, price: rawVal } : p));
+      setProducts(prev => prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal } : p));
       setEditingProductId(null);
+      setEditingProductName('');
       setEditingProductPrice('');
       setSyncStatus('online');
-      showNotification('Menu price saved successfully!');
+      showNotification('Product name and price saved successfully!');
       if (audioEnabled) playSound('success');
     } catch (e) {
-      console.warn("DB price edit failed, applying locally: ", e);
-      setProducts(prev => prev.map(p => p.id === pId ? { ...p, price: rawVal } : p));
+      console.warn("DB product edit failed, applying locally: ", e);
+      setProducts(prev => prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal } : p));
       setEditingProductId(null);
+      setEditingProductName('');
       setEditingProductPrice('');
       setSyncStatus('offline');
-      showNotification('Price modified locally (offline)');
+      showNotification('Product details modified locally (offline)');
     }
   };
 
@@ -883,16 +911,23 @@ export default function BossRicePOS() {
       return;
     }
 
-    // Auth succeeded! Execute void deletion sequence
+    // Auth succeeded! Execute void update sequence
     setSyncStatus('syncing');
     try {
+      const isGcash = orderToVoid.payment_method?.toLowerCase().includes('gcash');
+      const voidPaymentMethod = isGcash ? 'GCash (Voided)' : 'Cash (Voided)';
+
       if (orderToVoid.id) {
-        const { error } = await supabase.from(ordersTableName).delete().eq('id', orderToVoid.id);
+        const { error } = await supabase
+          .from(ordersTableName)
+          .update({ payment_method: voidPaymentMethod })
+          .eq('id', orderToVoid.id);
         if (error) throw error;
       }
 
-      // Readjust shift total subtractively
-      if (myActiveShift) {
+      // Readjust shift total subtractively (only if a fresh void)
+      const isAlreadyVoided = orderToVoid.payment_method?.toLowerCase().includes('void');
+      if (myActiveShift && !isAlreadyVoided) {
         const revisedSales = Math.max(0, (myActiveShift.total_sales || 0) - orderToVoid.total);
         const updatedShiftRecord = { ...myActiveShift, total_sales: revisedSales };
         setMyActiveShift(updatedShiftRecord);
@@ -917,8 +952,15 @@ export default function BossRicePOS() {
       syncShifts();
     } catch (e) {
       console.warn('DB void operation failed, falling back to local action: ', e);
-      // delete offline
-      setAllOrders(prev => prev.filter(o => o.order_number !== orderToVoid.order_number));
+      // update offline state
+      const isGcash = orderToVoid.payment_method?.toLowerCase().includes('gcash');
+      const voidPaymentMethod = isGcash ? 'GCash (Voided)' : 'Cash (Voided)';
+      setAllOrders(prev => prev.map(o => {
+        if (o.order_number === orderToVoid.order_number && o.created_at === orderToVoid.created_at) {
+          return { ...o, payment_method: voidPaymentMethod };
+        }
+        return o;
+      }));
       setIsVoidAuthOpen(false);
       setOrderToVoid(null);
       setAdminVoidPin('');
@@ -1204,37 +1246,66 @@ export default function BossRicePOS() {
     });
   };
 
+  // --- IN-MEMORY DATE FILTERING FOR HISTORICAL REPORTS ---
+  const filteredOrders = useMemo(() => {
+    return allOrders.filter(o => {
+      if (!o.created_at) return false;
+      try {
+        const oDateStr = o.created_at.substring(0, 10); // YYYY-MM-DD
+        return oDateStr >= startDateFilter && oDateStr <= endDateFilter;
+      } catch (err) {
+        return true;
+      }
+    });
+  }, [allOrders, startDateFilter, endDateFilter]);
+
   // --- STATS PARSING ---
   const analyticsData = useMemo(() => {
     const stats = {
       revenue: 0,
-      totalOrders: allOrders.length,
+      totalOrders: 0,
       averageTicket: 0,
       cashRevenue: 0,
       gcashRevenue: 0,
       cashCount: 0,
-      gcashCount: 0
+      gcashCount: 0,
+      voidedRevenue: 0,
+      voidedCount: 0,
+      allFilteredCount: filteredOrders.length
     };
 
-    allOrders.forEach(o => {
+    filteredOrders.forEach(o => {
+      const isVoid = o.payment_method?.toLowerCase().includes('void');
+      if (isVoid) {
+        stats.voidedRevenue += o.total;
+        stats.voidedCount++;
+        return; // skip adding to active sales totals
+      }
+
       stats.revenue += o.total;
-      if (o.payment_method === 'Cash') {
-        stats.cashRevenue += o.total;
-        stats.cashCount++;
-      } else {
+      stats.totalOrders++;
+
+      const isGcash = o.payment_method?.toLowerCase().includes('gcash');
+      if (isGcash) {
         stats.gcashRevenue += o.total;
         stats.gcashCount++;
+      } else {
+        stats.cashRevenue += o.total;
+        stats.cashCount++;
       }
     });
 
     stats.averageTicket = stats.totalOrders > 0 ? Math.round(stats.revenue / stats.totalOrders) : 0;
     return stats;
-  }, [allOrders]);
+  }, [filteredOrders]);
 
   // Leaders rankings parsing
   const bestSellersRankings = useMemo(() => {
     const scoreboard: { [name: string]: number } = {};
-    allOrders.forEach(order => {
+    filteredOrders.forEach(order => {
+      const isVoid = order.payment_method?.toLowerCase().includes('void');
+      if (isVoid) return; // skip voided dishes!
+
       if (Array.isArray(order.items)) {
         order.items.forEach(itemStr => {
           // Parse "Name xQuantity" or raw name
@@ -1253,7 +1324,50 @@ export default function BossRicePOS() {
     const list = Object.entries(scoreboard).map(([name, qty]) => ({ name, qty }));
     list.sort((a,b) => b.qty - a.qty);
     return list.slice(0, 5); // top 5
-  }, [allOrders]);
+  }, [filteredOrders]);
+
+  // --- DETAILED ADMIN DASHBOARD DETAILS ---
+  const dashboardDetails = useMemo(() => {
+    const branchSales: { [branch: string]: { revenue: number; count: number } } = {};
+    const cashierSales: { [cashier: string]: { revenue: number; count: number } } = {};
+    const hourlySales: { [hourRange: string]: number } = {};
+
+    filteredOrders.forEach(o => {
+      const isVoid = o.payment_method?.toLowerCase().includes('void');
+      if (isVoid) return; // skip voided transactions from dashboard stats
+
+      const bName = o.branch || 'Main Branch';
+      const cName = o.cashier_name || 'Cashier (Unassigned)';
+
+      // Branch aggregating
+      if (!branchSales[bName]) {
+        branchSales[bName] = { revenue: 0, count: 0 };
+      }
+      branchSales[bName].revenue += o.total;
+      branchSales[bName].count += 1;
+
+      // Cashier aggregating
+      if (!cashierSales[cName]) {
+        cashierSales[cName] = { revenue: 0, count: 0 };
+      }
+      cashierSales[cName].revenue += o.total;
+      cashierSales[cName].count += 1;
+
+      // Hourly distribution parsing
+      try {
+        const dObj = new Date(o.created_at);
+        const hr = dObj.getHours();
+        const hrStr = hr === 0 ? '12 AM' : hr === 12 ? '12 PM' : hr > 12 ? `${hr - 12} PM` : `${hr} AM`;
+        hourlySales[hrStr] = (hourlySales[hrStr] || 0) + o.total;
+      } catch (e) {}
+    });
+
+    return {
+      branchSales: Object.entries(branchSales).map(([name, val]) => ({ name, ...val })),
+      cashierSales: Object.entries(cashierSales).map(([name, val]) => ({ name, ...val })),
+      hourlySales: Object.entries(hourlySales).map(([hourRange, revenue]) => ({ hourRange, revenue }))
+    };
+  }, [filteredOrders]);
 
   const maxBestSellerQty = useMemo(() => {
     if (bestSellersRankings.length === 0) return 1;
@@ -1716,52 +1830,184 @@ export default function BossRicePOS() {
                           Dashboard <span className="text-red-500">Analytics</span>
                         </h2>
                         <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
-                          Real-time orders parsing back to Supabase databases
+                          Real-time sales, personnel and branches aggregations
                         </p>
                       </div>
 
-                      {/* Period tabs */}
+                      {/* Period Quick Presets */}
                       <div className="flex p-1 bg-zinc-900 rounded-xl border border-zinc-800 w-fit">
                         {(['daily', 'weekly', 'monthly'] as const).map(p => (
                           <button
                             key={p}
-                            onClick={() => { handleTactileClick(); setReportPeriod(p); }}
-                            className={`px-4 py-1.5 rounded-lg text-[10px] font-display uppercase tracking-widest font-bold transition ${
-                              reportPeriod === p ? 'bg-red-650 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                            onClick={() => {
+                              handleTactileClick();
+                              setReportPeriod(p);
+                              const todayStr = new Date().toLocaleDateString('sv').substring(0, 10);
+                              if (p === 'daily') {
+                                setStartDateFilter(todayStr);
+                                setEndDateFilter(todayStr);
+                              } else if (p === 'weekly') {
+                                const dObj = new Date();
+                                const dNum = dObj.getDay();
+                                const startObj = new Date(dObj.setDate(dObj.getDate() - dNum));
+                                setStartDateFilter(startObj.toLocaleDateString('sv').substring(0, 10));
+                                setEndDateFilter(todayStr);
+                              } else if (p === 'monthly') {
+                                const dObj = new Date();
+                                const startObj = new Date(dObj.getFullYear(), dObj.getMonth(), 1);
+                                setStartDateFilter(startObj.toLocaleDateString('sv').substring(0, 10));
+                                setEndDateFilter(todayStr);
+                              }
+                            }}
+                            className={`px-4 py-1.5 rounded-lg text-[10px] font-display uppercase tracking-widest font-bold transition-all cursor-pointer ${
+                              reportPeriod === p ? 'bg-red-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                           >
                             {p === 'daily' ? 'Today' : p === 'weekly' ? 'Week' : 'Month'}
                           </button>
                         ))}
+                        <button
+                          onClick={() => { handleTactileClick(); setReportPeriod('custom'); }}
+                          className={`px-4 py-1.5 rounded-lg text-[10px] font-display uppercase tracking-widest font-bold transition-all cursor-pointer ${
+                            reportPeriod === 'custom' ? 'bg-red-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'
+                          }`}
+                        >
+                          Custom
+                        </button>
                       </div>
                     </header>
 
                     {/* Analytics grids */}
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                       
                       <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💰 Total Revenue</span>
+                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💰 Total Revenue</span>
                         <div className="text-2xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
                         <p className="text-[10px] text-zinc-500 font-display mt-2">Combined orders value</p>
                       </article>
 
                       <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🧾 Ticket Volumes</span>
+                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🧾 Ticket Volumes</span>
                         <div className="text-2xl font-mono font-bold text-white">{analyticsData.totalOrders}</div>
                         <p className="text-[10px] text-zinc-500 font-display mt-2">Transactions count</p>
                       </article>
 
                       <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💵 Cash Sales</span>
+                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💵 Cash Sales</span>
                         <div className="text-2xl font-mono font-bold text-emerald-500">₱{analyticsData.cashRevenue.toLocaleString()}</div>
                         <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.cashCount} Cash checkouts</p>
                       </article>
 
                       <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📱 GCash Sales</span>
+                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📱 GCash Sales</span>
                         <div className="text-2xl font-mono font-bold text-blue-500">₱{analyticsData.gcashRevenue.toLocaleString()}</div>
                         <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.gcashCount} QR scans</p>
                       </article>
+
+                      <article className="bg-zinc-900 border border-red-950/45 p-5 rounded-2xl col-span-2 md:col-span-1">
+                        <span className="text-red-405 text-red-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> Voided Orders
+                        </span>
+                        <div className="text-2xl font-mono font-bold text-red-500">₱{analyticsData.voidedRevenue.toLocaleString()}</div>
+                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.voidedCount} voided slips</p>
+                      </article>
+                    </div>
+
+                    {/* CORE ADMIN INTELLIGENCE DASHBOARD (SALES PER BRANCH, SALES PER CASHIER, HOURLY HEATMAP) */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      
+                      {/* BRANCH PERFORMANCE LEADERBOARD */}
+                      <div className="bg-zinc-900 border border-zinc-805/85 border-zinc-800 p-5 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-2.5">
+                          <span className="text-zinc-300 text-xs font-display uppercase tracking-widest font-extrabold flex items-center gap-1">🏢 Sales per Branch</span>
+                          <span className="text-[8px] tracking-wider font-mono bg-zinc-950 text-zinc-500 px-1.5 py-0.5 rounded uppercase font-semibold">Active Outlets</span>
+                        </div>
+                        {dashboardDetails.branchSales.length === 0 ? (
+                          <div className="py-12 text-center text-xs text-zinc-500 uppercase tracking-widest font-display">No branch records logged.</div>
+                        ) : (
+                          <div className="flex flex-col gap-4 overflow-y-auto max-h-56 pr-0.5 animate-fadeIn">
+                            {dashboardDetails.branchSales.map((b, idx) => {
+                              const contributionPct = analyticsData.revenue > 0 ? (b.revenue / analyticsData.revenue) * 100 : 0;
+                              return (
+                                <div key={idx} className="flex flex-col gap-1.5">
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-bold text-zinc-300 font-display">{b.name}</span>
+                                    <div className="text-right">
+                                      <span className="font-mono font-bold text-amber-500">₱{b.revenue.toLocaleString()}</span>
+                                      <span className="text-[9px] text-zinc-500 block font-mono">({b.count} sales)</span>
+                                    </div>
+                                  </div>
+                                  <div className="w-full bg-zinc-950 h-1.5 rounded-full overflow-hidden border border-zinc-850">
+                                    <div className="bg-gradient-to-r from-red-650 to-amber-500 bg-red-600 h-full rounded-full animate-pulse" style={{ width: `${contributionPct}%` }} />
+                                  </div>
+                                  <div className="text-right">
+                                    <span className="text-[9px] text-zinc-500 font-mono italic">{contributionPct.toFixed(1)}% revenue share</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* STAFF PERFORMANCE ACCOUNTABILITY */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-2.5">
+                          <span className="text-zinc-300 text-xs font-display uppercase tracking-widest font-extrabold flex items-center gap-1">👤 Staff Sales Leaderboard</span>
+                          <span className="text-[8px] tracking-wider font-mono bg-zinc-950 text-zinc-500 px-1.5 py-0.5 rounded uppercase font-semibold">User Accounts</span>
+                        </div>
+                        {dashboardDetails.cashierSales.length === 0 ? (
+                          <div className="py-12 text-center text-xs text-zinc-500 uppercase tracking-widest font-display">No cashier checkout logs found.</div>
+                        ) : (
+                          <div className="flex flex-col gap-4 overflow-y-auto max-h-56 pr-0.5">
+                            {dashboardDetails.cashierSales.map((c, idx) => {
+                              const contrPct = analyticsData.revenue > 0 ? (c.revenue / analyticsData.revenue) * 100 : 0;
+                              return (
+                                <div key={idx} className="flex flex-col gap-1.5">
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-bold text-zinc-300 font-display uppercase">{c.name}</span>
+                                    <div className="text-right">
+                                      <span className="font-mono font-bold text-emerald-400">₱{c.revenue.toLocaleString()}</span>
+                                      <span className="text-[9px] text-zinc-500 block font-mono">({c.count} transactions)</span>
+                                    </div>
+                                  </div>
+                                  <div className="w-full bg-zinc-950 h-1.5 rounded-full overflow-hidden border border-zinc-850">
+                                    <div className="bg-gradient-to-r from-emerald-600 to-teal-500 h-full rounded-full" style={{ width: `${contrPct}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* PEAK HOURS HEATMAPPED INTENSITY */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-2.5">
+                          <span className="text-zinc-300 text-xs font-display uppercase tracking-widest font-extrabold flex items-center gap-1">⏰ Hourly Traffic Heatmap</span>
+                          <span className="text-[8px] tracking-wider font-mono bg-zinc-950 text-zinc-500 px-1.5 py-0.5 rounded uppercase font-semibold">Peak Hours</span>
+                        </div>
+                        {dashboardDetails.hourlySales.length === 0 ? (
+                          <div className="py-12 text-center text-xs text-zinc-500 uppercase tracking-widest font-display">Gathering operational hourly metrics...</div>
+                        ) : (
+                          <div className="flex flex-col gap-3.5 overflow-y-auto max-h-56 pr-0.5">
+                            {dashboardDetails.hourlySales.map((h, idx) => {
+                              const maxRev = Math.max(...dashboardDetails.hourlySales.map(item => item.revenue), 1);
+                              const barRatio = (h.revenue / maxRev) * 100;
+                              return (
+                                <div key={idx} className="flex items-center gap-3 text-xs">
+                                  <span className="font-mono font-semibold text-zinc-400 w-16">{h.hourRange}</span>
+                                  <div className="flex-1 bg-zinc-950 h-2.5 rounded border border-zinc-850 overflow-hidden">
+                                    <div className="bg-gradient-to-r from-amber-500 to-amber-600 h-full rounded" style={{ width: `${barRatio}%` }} />
+                                  </div>
+                                  <span className="font-mono font-bold text-amber-500 w-20 text-right">₱{h.revenue.toLocaleString()}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
                     </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1797,61 +2043,95 @@ export default function BossRicePOS() {
                           <span className="text-[9px] tracking-normal font-mono font-light text-zinc-550 lowercase italic">Order limits showing latest {analyticsData.totalOrders}</span>
                         </h4>
 
-                        {/* DAILY SALES REPORT DATE PICKER & CSV EXPORTER */}
-                        <div className="mb-4 bg-zinc-950 p-4 rounded-xl border border-zinc-850/80 flex flex-col sm:flex-row gap-3 items-center justify-between">
+                        {/* FROM - TO SALES RANGE PICKERS PANEL */}
+                        <div className="mb-4 bg-zinc-950 p-4 rounded-xl border border-zinc-850/80 flex flex-col xl:flex-row gap-4 items-center justify-between">
                           <div className="text-left">
-                            <span className="text-[10px] font-display uppercase tracking-widest text-amber-500 font-bold block">Sales Export Module</span>
-                            <span className="text-[9px] text-zinc-500 block uppercase mt-0.5">Export operational spreadsheets</span>
+                            <span className="text-[10px] font-display uppercase tracking-widest text-amber-500 font-bold block">Operational Calendar Filter</span>
+                            <span className="text-[9px] text-zinc-500 block uppercase mt-0.5">Filter sales or export spreadsheets</span>
                           </div>
-                          <div className="flex gap-1.5 w-full sm:w-auto">
-                            <input 
-                              type="date"
-                              value={selectedReportDate}
-                              onChange={(e) => setSelectedReportDate(e.target.value)}
-                              className="bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-350 px-2 py-1.5 rounded-lg outline-none focus:border-red-500"
-                            />
+                          
+                          <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto justify-end">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-display uppercase text-zinc-500 font-bold">From:</span>
+                              <input 
+                                type="date"
+                                value={startDateFilter}
+                                onChange={(e) => {
+                                  setStartDateFilter(e.target.value);
+                                  setReportPeriod('custom');
+                                }}
+                                className="bg-zinc-900 border border-zinc-800 text-xs font-mono px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 text-zinc-300"
+                              />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-display uppercase text-zinc-500 font-bold">To:</span>
+                              <input 
+                                type="date"
+                                value={endDateFilter}
+                                onChange={(e) => {
+                                  setEndDateFilter(e.target.value);
+                                  setReportPeriod('custom');
+                                }}
+                                className="bg-zinc-900 border border-zinc-800 text-xs font-mono px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 text-zinc-300"
+                              />
+                            </div>
+
                             <button
-                              onClick={() => handleExportCSV(selectedReportDate)}
-                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-display font-semibold uppercase tracking-wider flex items-center gap-1 active:scale-95 transition"
+                              onClick={() => handleExportCSV()}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-display font-semibold uppercase tracking-wider flex items-center gap-1 cursor-pointer active:scale-95 transition shadow-sm"
                             >
-                              <Download className="w-3.5 h-3.5" /> CSV Export
+                              <Download className="w-3.5 h-3.5" /> CSV EXPORT
                             </button>
                           </div>
                         </div>
 
-                        {allOrders.length === 0 ? (
+                        {filteredOrders.length === 0 ? (
                           <div className="py-12 text-center">
-                            <p className="text-xs text-zinc-505 font-display uppercase tracking-wider">No orders logged.</p>
+                            <p className="text-xs text-zinc-500 font-display uppercase tracking-wider">No completed orders parsed inside date parameters.</p>
                           </div>
                         ) : (
-                          <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
-                            {allOrders.map((itm, i) => {
+                          <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
+                            {filteredOrders.map((itm, i) => {
                               const orderDate = new Date(itm.created_at);
                               const orderTime = orderDate.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+                              const isVoided = itm.payment_method?.toLowerCase().includes('void');
                               return (
-                                <div key={i} className="bg-zinc-950 border border-zinc-850 p-3.5 rounded-xl flex items-center justify-between gap-4">
+                                <div key={i} className={`bg-zinc-950 border p-3 rounded-xl flex items-center justify-between gap-4 transition ${isVoided ? 'border-red-550 border-red-500/10 bg-red-950/5' : 'border-zinc-850'}`}>
                                   <div className="min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
+                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                                       <span className="text-white text-xs font-mono font-bold">#{itm.order_number}</span>
-                                      <span className="text-[9px] uppercase tracking-widest font-display text-zinc-650 font-semibold">{itm.payment_method}</span>
+                                      {isVoided ? (
+                                        <span className="text-[8px] uppercase tracking-wider font-mono bg-red-950/40 border border-red-900/30 px-1.5 py-0.5 text-red-500 rounded font-semibold flex items-center gap-1 shadow-sm leading-none">
+                                          <span className="w-1 h-1 rounded-full bg-red-500 shrink-0" /> VOIDED
+                                        </span>
+                                      ) : (
+                                        <span className="text-[8px] uppercase tracking-wider font-mono bg-emerald-950/40 border border-emerald-950/20 px-1.5 py-0.5 text-emerald-400 rounded leading-none">
+                                          ACTIVE
+                                        </span>
+                                      )}
+                                      <span className="text-[9px] uppercase tracking-widest font-display text-zinc-650 font-bold">{itm.payment_method}</span>
                                       {itm.branch && (
-                                        <span className="text-[8px] uppercase tracking-wide font-mono bg-zinc-900 text-zinc-400 px-1 border border-zinc-855 rounded">{itm.branch}</span>
+                                        <span className="text-[8px] uppercase tracking-wide font-mono bg-zinc-905 border border-zinc-850 text-zinc-400 px-1 rounded">{itm.branch}</span>
+                                      )}
+                                      {itm.cashier_name && (
+                                        <span className="text-[8.5px] uppercase tracking-wide font-mono text-zinc-550 font-semibold">by {itm.cashier_name}</span>
                                       )}
                                     </div>
-                                    <p className="text-[10px] text-zinc-500 font-display line-clamp-1 truncate uppercase">
+                                    <p className={`text-[10px] font-display line-clamp-1 truncate uppercase ${isVoided ? 'line-through text-zinc-550 opacity-70' : 'text-zinc-500'}`}>
                                       {itm.items.join(', ')}
                                     </p>
                                   </div>
                                   <div className="text-right flex items-center gap-3">
                                     <div>
-                                      <span className="font-mono font-bold text-amber-500 block text-xs">₱{itm.total}</span>
+                                      <span className={`font-mono font-bold block text-xs ${isVoided ? 'line-through text-zinc-600' : 'text-amber-500'}`}>₱{itm.total}</span>
                                       <span className="text-[9px] font-mono text-zinc-500 block mt-0.5">{orderTime}</span>
                                     </div>
                                     
                                     <button 
                                       onClick={() => deleteOrder(itm.id, itm.order_number)}
                                       title="Delete transaction record"
-                                      className="p-1 px-1.5 bg-red-950/20 hover:bg-red-600 border border-red-900/30 hover:border-red-500 text-red-400 hover:text-white rounded-lg transition"
+                                      className="p-1 px-1.5 bg-red-950/20 hover:bg-red-650 border border-red-910/30 hover:border-red-505 text-red-400 hover:text-white rounded-lg transition shrink-0"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
@@ -1939,41 +2219,65 @@ export default function BossRicePOS() {
                         <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
                           {products.map(p => (
                             <div key={p.id} className="bg-zinc-950/70 border border-zinc-850/50 hover:border-zinc-800 p-3 rounded-xl flex items-center justify-between gap-4 transition">
-                              <div className="flex items-center gap-3">
-                                <span className="bg-zinc-900 w-10 h-10 rounded-lg flex items-center justify-center text-xl border border-zinc-850">{p.emoji}</span>
-                                <div>
-                                  <h6 className="text-xs font-display font-bold uppercase tracking-wide text-zinc-200">{p.name}</h6>
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <span className="bg-zinc-900 w-10 h-10 rounded-lg flex items-center justify-center text-xl border border-zinc-850 shrink-0">{p.emoji}</span>
+                                <div className="flex-1 min-w-0">
                                   {editingProductId === p.id ? (
-                                    <div className="flex items-center gap-1.5 mt-1.5">
-                                      <input 
-                                        type="number"
-                                        value={editingProductPrice}
-                                        onChange={(e) => setEditingProductPrice(e.target.value)}
-                                        className="bg-zinc-900 border border-zinc-800 w-20 p-1 px-2 rounded font-mono text-[11px] text-white focus:outline-none focus:border-amber-500"
-                                      />
-                                      <button 
-                                        onClick={() => handleUpdateProductPrice(p.id)}
-                                        className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 scale-90"
-                                      >
-                                        <Check className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button 
-                                        onClick={() => setEditingProductId(null)}
-                                        className="p-1 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-750 scale-90"
-                                      >
-                                        <X className="w-3.5 h-3.5" />
-                                      </button>
+                                    <div className="flex flex-col gap-2 mt-0.5 w-full">
+                                      <div className="flex items-center gap-1.5 w-full">
+                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-10 shrink-0 font-display">Title:</span>
+                                        <input 
+                                          type="text"
+                                          value={editingProductName}
+                                          onChange={(e) => setEditingProductName(e.target.value)}
+                                          className="bg-zinc-900 border border-zinc-800 p-1 px-2.5 rounded text-xs font-display text-white focus:outline-none focus:border-red-500 flex-1"
+                                          placeholder="Product name"
+                                        />
+                                      </div>
+                                      <div className="flex items-center gap-1.5 w-full">
+                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-10 shrink-0 font-display">Price:</span>
+                                        <input 
+                                          type="number"
+                                          value={editingProductPrice}
+                                          onChange={(e) => setEditingProductPrice(e.target.value)}
+                                          className="bg-zinc-900 border border-zinc-800 p-1 p-1 px-2.5 rounded font-mono text-[11px] text-amber-500 focus:outline-none focus:border-red-500 w-24 shrink-0"
+                                          placeholder="Price ₱"
+                                        />
+                                        <div className="flex gap-1.5 ml-auto">
+                                          <button 
+                                            onClick={() => handleUpdateProduct(p.id)}
+                                            title="Save updates"
+                                            className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 hover:scale-105 active:scale-95 transition"
+                                          >
+                                            <Check className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button 
+                                            onClick={() => setEditingProductId(null)}
+                                            title="Cancel action"
+                                            className="p-1 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-750 hover:scale-105 active:scale-95 transition"
+                                          >
+                                            <X className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </div>
                                     </div>
                                   ) : (
-                                    <span className="text-[10px] font-mono text-zinc-550 block mt-0.5 flex items-center gap-2">
-                                      <span>₱{p.price}</span>
-                                      <button 
-                                        onClick={() => { setEditingProductId(p.id); setEditingProductPrice(p.price.toString()); }}
-                                        className="text-[9px] text-amber-500 hover:underline uppercase flex items-center gap-0.5"
-                                      >
-                                        <Edit className="w-2.5 h-2.5" /> Edit
-                                      </button>
-                                    </span>
+                                    <>
+                                      <h6 className="text-xs font-display font-medium uppercase tracking-wide text-zinc-200">{p.name}</h6>
+                                      <span className="text-[10px] font-mono text-zinc-550 block mt-0.5 flex items-center gap-2">
+                                        <span className="text-amber-500 font-bold">₱{p.price}</span>
+                                        <button 
+                                          onClick={() => { 
+                                            setEditingProductId(p.id); 
+                                            setEditingProductName(p.name);
+                                            setEditingProductPrice(p.price.toString()); 
+                                          }}
+                                          className="text-[9px] text-amber-500 hover:underline uppercase flex items-center gap-0.5"
+                                        >
+                                          <Edit className="w-2.5 h-2.5" /> Edit
+                                        </button>
+                                      </span>
+                                    </>
                                   )}
                                 </div>
                               </div>
