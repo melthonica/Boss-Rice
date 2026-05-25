@@ -152,6 +152,9 @@ export default function BossRicePOS() {
     new Date().toLocaleDateString('sv').substring(0, 10) // local YYYY-MM-DD
   );
 
+  const [selectedBranchFilter, setSelectedBranchFilter] = useState<string>('All');
+  const [selectedCashierFilter, setSelectedCashierFilter] = useState<string>('All');
+
   // --- VOID ORDER AUTHORIZATION ---
   const [isVoidAuthOpen, setIsVoidAuthOpen] = useState(false);
   const [orderToVoid, setOrderToVoid] = useState<Order | null>(null);
@@ -169,6 +172,26 @@ export default function BossRicePOS() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<'All' | 'Meals' | 'Add-ons' | 'Drinks'>('All');
   const [allOrders, setAllOrders] = useState<Order[]>([]);
+  
+  // --- DYNAMIC FILTER OPTIONS FOR BRANCHES & CASHIERS ---
+  const dynamicBranches = useMemo(() => {
+    const list = new Set<string>();
+    allOrders.forEach(o => { if (o.branch) list.add(o.branch); });
+    shifts.forEach(s => { if (s.branch) list.add(s.branch); });
+    expenses.forEach(e => { if (e.branch) list.add(e.branch); });
+    // Guarantee our typical default ones
+    list.add('Main Branch');
+    return Array.from(list).sort();
+  }, [allOrders, shifts, expenses]);
+
+  const dynamicCashiers = useMemo(() => {
+    const list = new Set<string>();
+    allOrders.forEach(o => { if (o.cashier_name) list.add(o.cashier_name); });
+    shifts.forEach(s => { if (s.cashier_name) list.add(s.cashier_name); });
+    expenses.forEach(e => { if (e.cashier_name) list.add(e.cashier_name); });
+    users.forEach(u => { if (u.username) list.add(u.username); });
+    return Array.from(list).sort();
+  }, [allOrders, shifts, expenses, users]);
   
   // --- SYNC LED STATE ---
   const [syncStatus, setSyncStatus] = useState<'online' | 'syncing' | 'offline'>('syncing');
@@ -701,11 +724,24 @@ export default function BossRicePOS() {
     const subset = allOrders.filter(o => {
       if (!o.created_at) return false;
       const oDateStr = o.created_at.substring(0, 10);
-      return oDateStr >= startDateFilter && oDateStr <= endDateFilter;
+      const matchDate = oDateStr >= startDateFilter && oDateStr <= endDateFilter;
+      if (!matchDate) return false;
+
+      if (selectedBranchFilter !== 'All') {
+        const bMatch = (o.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+        if (!bMatch) return false;
+      }
+
+      if (selectedCashierFilter !== 'All') {
+        const cMatch = (o.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+        if (!cMatch) return false;
+      }
+
+      return true;
     });
 
     if (subset.length === 0) {
-      showNotification(`No completed orders logged between ${startDateFilter} and ${endDateFilter} to export.`);
+      showNotification(`No completed orders logged matching current filters.`);
       return;
     }
 
@@ -713,21 +749,63 @@ export default function BossRicePOS() {
     let csvStr = "\uFEFF"; // Byte-order mark for Excel compatibility
     csvStr += `"BOSS RICE SALES REPORT"\n`;
     csvStr += `"Selected Date Range:","${startDateFilter} to ${endDateFilter}"\n`;
+    csvStr += `"Branch Filter:","${selectedBranchFilter}"\n`;
+    csvStr += `"Cashier Filter:","${selectedCashierFilter}"\n`;
     csvStr += `"Generated Time:","${new Date().toLocaleTimeString('en-PH')}"\n\n`;
     
-    csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Total Val (PHP)","Cash Received","Change Returned","Payment Channel"\n`;
+    csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Cashier","Total Val (PHP)","Cash Received","Change Returned","Payment Channel"\n`;
     
     let sumTotalSales = 0;
     subset.forEach(o => {
       const rawText = o.items.join('; ').replace(/"/g, '""');
       const timeString = new Date(o.created_at).toLocaleString('en-PH', { hour12: false });
-      csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}",${o.total},${o.cash_received || 0},${o.change_given || 0},"${o.payment_method}"\n`;
+      csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}","${o.cashier_name || 'Unassigned'}",${o.total},${o.cash_received || 0},${o.change_given || 0},"${o.payment_method}"\n`;
       sumTotalSales += o.total;
     });
 
     csvStr += `\n"SUMMARY METRICS"\n`;
     csvStr += `"Total Volume Count:",${subset.length}\n`;
     csvStr += `"Gross Operational Revenues PHP:",${sumTotalSales}\n`;
+    
+    // Sum beginning balance of shifts within range & filters
+    const sumBeginningBalance = shifts.reduce((acc, s) => {
+      const dateStr = s.login_time ? s.login_time.substring(0, 10) : (s.created_at ? s.created_at.substring(0, 10) : '');
+      if (dateStr && dateStr >= startDateFilter && dateStr <= endDateFilter) {
+        if (selectedBranchFilter !== 'All') {
+          const bMatch = (s.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+          if (!bMatch) return acc;
+        }
+        if (selectedCashierFilter !== 'All') {
+          const cMatch = (s.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+          if (!cMatch) return acc;
+        }
+        return acc + (s.beginning_balance || 0);
+      }
+      return acc;
+    }, 0);
+
+    // Sum expenses within range & filters
+    const sumExpenses = expenses.reduce((acc, e) => {
+      const dateStr = e.created_at ? e.created_at.substring(0, 10) : '';
+      if (dateStr && dateStr >= startDateFilter && dateStr <= endDateFilter) {
+        if (selectedBranchFilter !== 'All') {
+          const bMatch = (e.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+          if (!bMatch) return acc;
+        }
+        if (selectedCashierFilter !== 'All') {
+          const cMatch = (e.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+          if (!cMatch) return acc;
+        }
+        return acc + (e.cost || 0);
+      }
+      return acc;
+    }, 0);
+
+    const netValue = sumTotalSales - sumExpenses;
+
+    csvStr += `"Total Shift Beginning Balance PHP:",${sumBeginningBalance}\n`;
+    csvStr += `"Total Operational Expenses PHP:",${sumExpenses}\n`;
+    csvStr += `"Total Net Revenue (Gross - Expenses) PHP:",${netValue}\n`;
 
     // Dynamic click triggers browser downloader
     const blobObj = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
@@ -1252,12 +1330,25 @@ export default function BossRicePOS() {
       if (!o.created_at) return false;
       try {
         const oDateStr = o.created_at.substring(0, 10); // YYYY-MM-DD
-        return oDateStr >= startDateFilter && oDateStr <= endDateFilter;
+        const matchDate = oDateStr >= startDateFilter && oDateStr <= endDateFilter;
+        if (!matchDate) return false;
+
+        if (selectedBranchFilter !== 'All') {
+          const bMatch = (o.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+          if (!bMatch) return false;
+        }
+
+        if (selectedCashierFilter !== 'All') {
+          const cMatch = (o.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+          if (!cMatch) return false;
+        }
+
+        return true;
       } catch (err) {
         return true;
       }
     });
-  }, [allOrders, startDateFilter, endDateFilter]);
+  }, [allOrders, startDateFilter, endDateFilter, selectedBranchFilter, selectedCashierFilter]);
 
   // --- STATS PARSING ---
   const analyticsData = useMemo(() => {
@@ -1271,8 +1362,46 @@ export default function BossRicePOS() {
       gcashCount: 0,
       voidedRevenue: 0,
       voidedCount: 0,
-      allFilteredCount: filteredOrders.length
+      allFilteredCount: filteredOrders.length,
+      totalBeginningBalance: 0,
+      totalExpenses: 0,
+      netRevenue: 0,
+      expectedRegisterCash: 0
     };
+
+    // Calculate sum of beginning balances for selected date range
+    shifts.forEach(s => {
+      const dateStr = s.login_time ? s.login_time.substring(0, 10) : (s.created_at ? s.created_at.substring(0, 10) : '');
+      if (dateStr && dateStr >= startDateFilter && dateStr <= endDateFilter) {
+        if (selectedBranchFilter !== 'All') {
+          const bMatch = (s.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+          if (!bMatch) return;
+        }
+        if (selectedCashierFilter !== 'All') {
+          const cMatch = (s.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+          if (!cMatch) return;
+        }
+        stats.totalBeginningBalance += s.beginning_balance || 0;
+      }
+    });
+
+    // Calculate sum of expenses for selected date range
+    expenses.forEach(e => {
+      if (e.created_at) {
+        const dateStr = e.created_at.substring(0, 10);
+        if (dateStr && dateStr >= startDateFilter && dateStr <= endDateFilter) {
+          if (selectedBranchFilter !== 'All') {
+            const bMatch = (e.branch || 'Main Branch').toLowerCase() === selectedBranchFilter.toLowerCase();
+            if (!bMatch) return;
+          }
+          if (selectedCashierFilter !== 'All') {
+            const cMatch = (e.cashier_name || '').toLowerCase() === selectedCashierFilter.toLowerCase();
+            if (!cMatch) return;
+          }
+          stats.totalExpenses += e.cost || 0;
+        }
+      }
+    });
 
     filteredOrders.forEach(o => {
       const isVoid = o.payment_method?.toLowerCase().includes('void');
@@ -1296,8 +1425,10 @@ export default function BossRicePOS() {
     });
 
     stats.averageTicket = stats.totalOrders > 0 ? Math.round(stats.revenue / stats.totalOrders) : 0;
+    stats.netRevenue = stats.revenue - stats.totalExpenses;
+    stats.expectedRegisterCash = stats.cashRevenue + stats.totalBeginningBalance - stats.totalExpenses;
     return stats;
-  }, [filteredOrders]);
+  }, [filteredOrders, shifts, expenses, startDateFilter, endDateFilter, selectedBranchFilter, selectedCashierFilter]);
 
   // Leaders rankings parsing
   const bestSellersRankings = useMemo(() => {
@@ -1878,38 +2009,70 @@ export default function BossRicePOS() {
                     </header>
 
                     {/* Analytics grids */}
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
                       
-                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💰 Total Revenue</span>
-                        <div className="text-2xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
-                        <p className="text-[10px] text-zinc-500 font-display mt-2">Combined orders value</p>
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💰 Gross Rev.</span>
+                          <div className="text-xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Core Sales sum</p>
                       </article>
 
-                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🧾 Ticket Volumes</span>
-                        <div className="text-2xl font-mono font-bold text-white">{analyticsData.totalOrders}</div>
-                        <p className="text-[10px] text-zinc-500 font-display mt-2">Transactions count</p>
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🏁 Beg. Balance</span>
+                          <div className="text-xl font-mono font-bold text-blue-400 font-semibold">₱{analyticsData.totalBeginningBalance.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Initial register</p>
                       </article>
 
-                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💵 Cash Sales</span>
-                        <div className="text-2xl font-mono font-bold text-emerald-500">₱{analyticsData.cashRevenue.toLocaleString()}</div>
-                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.cashCount} Cash checkouts</p>
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💵 Cash Sales</span>
+                          <div className="text-xl font-mono font-bold text-emerald-500 font-semibold">₱{analyticsData.cashRevenue.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">{analyticsData.cashCount} cash bills</p>
                       </article>
 
-                      <article className="bg-zinc-900 border border-zinc-800/80 p-5 rounded-2xl">
-                        <span className="text-zinc-550 text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📱 GCash Sales</span>
-                        <div className="text-2xl font-mono font-bold text-blue-500">₱{analyticsData.gcashRevenue.toLocaleString()}</div>
-                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.gcashCount} QR scans</p>
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📱 GCash Sales</span>
+                          <div className="text-xl font-mono font-bold text-sky-400 font-semibold">₱{analyticsData.gcashRevenue.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">{analyticsData.gcashCount} QR scans</p>
                       </article>
 
-                      <article className="bg-zinc-900 border border-red-950/45 p-5 rounded-2xl col-span-2 md:col-span-1">
-                        <span className="text-red-405 text-red-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> Voided Orders
-                        </span>
-                        <div className="text-2xl font-mono font-bold text-red-500">₱{analyticsData.voidedRevenue.toLocaleString()}</div>
-                        <p className="text-[10px] text-zinc-500 font-display mt-2">{analyticsData.voidedCount} voided slips</p>
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💸 Exp. Outflow</span>
+                          <div className="text-xl font-mono font-bold text-rose-500 font-semibold">₱{analyticsData.totalExpenses.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Logged expenses</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-amber-950/40 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-amber-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🏦 Drawer Cash</span>
+                          <div className="text-xl font-mono font-bold text-amber-500">₱{analyticsData.expectedRegisterCash.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Expected cash in drawer</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-emerald-950/40 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-emerald-400 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💎 Net Revenue</span>
+                          <div className="text-xl font-mono font-bold text-emerald-400 text-glow">₱{analyticsData.netRevenue.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Gross minus expenses</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-semibold tracking-widest block mb-1">🧾 Volumes</span>
+                          <div className="text-xl font-mono font-bold text-white">{analyticsData.totalOrders}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">{analyticsData.voidedCount} voided slips</p>
                       </article>
                     </div>
 
@@ -2075,6 +2238,40 @@ export default function BossRicePOS() {
                                 }}
                                 className="bg-zinc-900 border border-zinc-800 text-xs font-mono px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 text-zinc-300"
                               />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-display uppercase text-zinc-500 font-bold">Branch:</span>
+                              <select 
+                                value={selectedBranchFilter}
+                                onChange={(e) => {
+                                  handleTactileClick();
+                                  setSelectedBranchFilter(e.target.value);
+                                }}
+                                className="bg-zinc-900 border border-zinc-800 text-xs px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 text-zinc-300 cursor-pointer min-w-[124px]"
+                              >
+                                <option value="All">All Branches</option>
+                                {dynamicBranches.map(b => (
+                                  <option key={b} value={b}>{b}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-display uppercase text-zinc-500 font-bold">Cashier:</span>
+                              <select 
+                                value={selectedCashierFilter}
+                                onChange={(e) => {
+                                  handleTactileClick();
+                                  setSelectedCashierFilter(e.target.value);
+                                }}
+                                className="bg-zinc-900 border border-zinc-800 text-xs px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 text-zinc-300 cursor-pointer min-w-[124px]"
+                              >
+                                <option value="All">All Staff</option>
+                                {dynamicCashiers.map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
                             </div>
 
                             <button
