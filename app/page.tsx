@@ -463,12 +463,15 @@ export default function BossRicePOS() {
   };
 
   const attemptLogin = () => {
-    // Authenticate user against dynamic loaded directory
-    const matchedUser = users.find(u => 
-      u.role === selectedRole && 
-      (selectedUsername ? u.username === selectedUsername : u.username.toLowerCase() === selectedRole) &&
-      u.password === enteredPin
-    );
+    // Authenticate user against dynamic loaded directory with smart fallback
+    const matchedUser = users.find(u => {
+      if (u.role !== selectedRole) return false;
+      if (selectedUsername) {
+        return u.username.toLowerCase() === selectedUsername.toLowerCase() && u.password === enteredPin;
+      }
+      // If default login is chosen, allow login if PIN matches this role's user
+      return u.password === enteredPin;
+    });
 
     if (matchedUser) {
       if (audioEnabled) playSound('success');
@@ -2412,6 +2415,102 @@ export default function BossRicePOS() {
                   className="w-full p-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-2"
                 >
                   <Smartphone className="w-4 h-4" /> 📱 GCash Instapay QR
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* SHIFT OVERLAY MODAL */}
+      <AnimatePresence>
+        {isShiftOverlayOpen && tempUser && (
+          <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative flex flex-col gap-4 font-display"
+            >
+              <header className="text-center">
+                <span className="text-3xl">🏧</span>
+                <h3 className="text-xl font-display font-black text-white uppercase tracking-tight mt-2">
+                  Open <span className="text-red-500">Shift</span> Register
+                </h3>
+                <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                  Cashier Active Station Setup for {tempUser.username.toUpperCase()}
+                </p>
+              </header>
+
+              <div className="flex flex-col gap-4 bg-zinc-950/50 p-4 rounded-2xl border border-zinc-850/60">
+                {/* BRANCH SELECTION */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    🏢 Select Assigned Branch / Station
+                  </label>
+                  <select
+                    value={shiftBranch}
+                    onChange={(e) => { handleTactileClick(); setShiftBranch(e.target.value); }}
+                    className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs font-display text-zinc-200 outline-none cursor-pointer hover:border-zinc-700 transition"
+                  >
+                    <option value="Main Branch">Main Branch</option>
+                    <option value="Mandaue City Station">Mandaue City Station</option>
+                    <option value="Cebu CBD Terminal">Cebu CBD Terminal</option>
+                    <option value="Custom...">Custom / Other Location...</option>
+                  </select>
+                </div>
+
+                {/* CUSTOM BRANCH INPUT */}
+                {shiftBranch === 'Custom...' && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex flex-col gap-1.5"
+                  >
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                      Specify Custom Branch Name
+                    </label>
+                    <input 
+                      type="text"
+                      placeholder="e.g. Lapu-Lapu Outlet"
+                      value={customBranchText}
+                      onChange={(e) => setCustomBranchText(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-500 transition"
+                    />
+                  </motion.div>
+                )}
+
+                {/* BEGINNING BALANCE */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    💰 Beginning Drawer cash Balance (₱)
+                  </label>
+                  <input 
+                    type="number"
+                    placeholder="e.g. 1000"
+                    value={shiftBegBalance}
+                    onChange={(e) => setShiftBegBalance(e.target.value)}
+                    className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-sm font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-500 transition"
+                  />
+                  <span className="text-[9px] text-zinc-650 uppercase tracking-widest leading-normal">
+                    Typical beginning balance is ₱1,000.00 for change drawers.
+                  </span>
+                </div>
+              </div>
+
+              {/* ACTION BUTTONS */}
+              <div className="flex gap-3 mt-2">
+                <button
+                  onClick={() => { handleTactileClick(); setIsShiftOverlayOpen(false); setTempUser(null); }}
+                  className="flex-1 py-3 bg-zinc-955 border border-zinc-850 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-xl text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => { handleTactileClick(); startShift(); }}
+                  className="flex-[2] py-3 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition active:scale-95 shadow-lg shadow-red-600/15 cursor-pointer"
+                >
+                  Open Register ✓
                 </button>
               </div>
             </motion.div>
