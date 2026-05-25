@@ -8,7 +8,8 @@ import {
   Check, Wifi, WifiOff, X, Key, Settings, QrCode, 
   Coins, TrendingUp, Grid, RefreshCw, Smartphone, 
   User, Database, Calendar, Briefcase, PlusCircle,
-  Edit, Save, Download, UserPlus, MapPin, AlertTriangle, FileSpreadsheet, Lock
+  Edit, Save, Download, UserPlus, MapPin, AlertTriangle, FileSpreadsheet, Lock,
+  ChevronLeft, ChevronRight, Sparkles
 } from 'lucide-react';
 
 // --- TYPES ---
