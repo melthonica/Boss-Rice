@@ -19,7 +19,7 @@ interface Product {
   emoji: string;
   price: number;
   active: boolean;
-  category?: 'Meals' | 'Add-ons' | 'Drinks';
+  category?: string;
 }
 
 interface Order {
@@ -111,6 +111,58 @@ const playSound = (type: 'beep' | 'success' | 'click' | 'error' | 'bell') => {
   }
 };
 
+const isEmojiCharacter = (str: string): boolean => {
+  if (!str) return false;
+  return !/[a-zA-Z0-9]/.test(str);
+};
+
+const getCategoryEmoji = (category?: string, overrideEmoji?: string): string => {
+  if (overrideEmoji && isEmojiCharacter(overrideEmoji)) {
+    return overrideEmoji;
+  }
+  const cat = (category || '').toLowerCase();
+  if (cat === 'all') return '🍽️';
+  if (cat.includes('drink') || cat.includes('beverage') || cat.includes('beer') || cat.includes('soda') || cat.includes('softdrink')) return '🥤';
+  if (cat.includes('add-on') || cat.includes('extra') || cat.includes('side')) return '🍟';
+  if (cat.includes('meal') || cat.includes('rice') || cat.includes('dish') || cat.includes('food')) return '🍱';
+  if (cat.includes('dessert') || cat.includes('sweet') || cat.includes('snack')) return '🍰';
+  if (cat.includes('soup')) return '🥣';
+  return '🏷️';
+};
+
+const mapLoadedProducts = (prods: Product[]): Product[] => {
+  return prods.map(p => {
+    let cat = p.category;
+    if (!cat) {
+      if (p.emoji && !isEmojiCharacter(p.emoji)) {
+        cat = p.emoji;
+      } else {
+        // fallback auto tagger
+        let autoCat = 'Meals';
+        const nameLower = p.name.toLowerCase();
+        if (nameLower.includes('add-on') || nameLower.includes('extra') || nameLower.includes('add on') || nameLower.includes('patty') || nameLower.includes('ginabot') && nameLower.includes('add')) {
+          autoCat = 'Add-ons';
+        } else if (nameLower.includes('drink') || nameLower.includes('col') || nameLower.includes('sakto') || nameLower.includes('water') || nameLower.includes('sprite') || nameLower.includes('coke') || nameLower.includes('juice')) {
+          autoCat = 'Drinks';
+        }
+        cat = autoCat;
+      }
+    }
+    
+    // Set appropriate visual emoji
+    let renderEmoji = p.emoji;
+    if (!renderEmoji || !isEmojiCharacter(renderEmoji)) {
+      renderEmoji = getCategoryEmoji(cat);
+    }
+    
+    return {
+      ...p,
+      category: cat,
+      emoji: renderEmoji
+    };
+  });
+};
+
 export default function BossRicePOS() {
   // --- AUTH STATES ---
   const [currentRole, setCurrentRole] = useState<'admin' | 'cashier' | null>(null);
@@ -171,7 +223,7 @@ export default function BossRicePOS() {
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<{ [id: number]: number }>({});
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<'All' | 'Meals' | 'Add-ons' | 'Drinks'>('All');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [allOrders, setAllOrders] = useState<Order[]>([]);
   
   // --- DYNAMIC FILTER OPTIONS FOR BRANCHES & CASHIERS ---
@@ -193,6 +245,19 @@ export default function BossRicePOS() {
     users.forEach(u => { if (u.username) list.add(u.username); });
     return Array.from(list).sort();
   }, [allOrders, shifts, expenses, users]);
+
+  const dynamicCategories = useMemo(() => {
+    const list = new Set<string>();
+    list.add('Meals');
+    list.add('Add-ons');
+    list.add('Drinks');
+    products.forEach(p => {
+      if (p.category) {
+        list.add(p.category);
+      }
+    });
+    return Array.from(list);
+  }, [products]);
   
   // --- SYNC LED STATE ---
   const [syncStatus, setSyncStatus] = useState<'online' | 'syncing' | 'offline'>('syncing');
@@ -221,7 +286,10 @@ export default function BossRicePOS() {
   // --- PRODUCT MANAGEMENT ---
   const [newProdName, setNewProdName] = useState('');
   const [newProdPrice, setNewProdPrice] = useState('');
-  const [newProdEmoji, setNewProdEmoji] = useState('🍱');
+  const [newProdCategory, setNewProdCategory] = useState('Meals');
+  const [customCategoryName, setCustomCategoryName] = useState('');
+  const [isAddingCustomCategory, setIsAddingCustomCategory] = useState(false);
+  const [editingProductCategory, setEditingProductCategory] = useState('');
 
   // --- CONFIRMATION MODAL STATE ---
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -311,8 +379,9 @@ export default function BossRicePOS() {
         }
       }
 
-      setProducts(validProducts);
-      localStorage.setItem('br_menu_cached', JSON.stringify(validProducts));
+      const parsedProducts = mapLoadedProducts(validProducts);
+      setProducts(parsedProducts);
+      localStorage.setItem('br_menu_cached', JSON.stringify(parsedProducts));
       setSyncStatus('online');
     } catch (e) {
       console.warn('Sync failed, running local fallback: ', e);
@@ -320,9 +389,9 @@ export default function BossRicePOS() {
       // Load cached
       const cache = localStorage.getItem('br_menu_cached');
       if (cache) {
-        setProducts(JSON.parse(cache));
+        setProducts(mapLoadedProducts(JSON.parse(cache)));
       } else {
-        setProducts(defaultProducts);
+        setProducts(mapLoadedProducts(defaultProducts));
       }
       showNotification('Running in Offline Mode / Local Cache');
     } finally {
@@ -508,8 +577,9 @@ export default function BossRicePOS() {
   // --- SEARCH & CATEGORY CLASSIFICATION ---
   const productsWithCategoriesAndFilters = useMemo(() => {
     return products.map(p => {
+      if (p.category) return p;
       // Simple automated taggers to avoid database schemas edits
-      let cat: 'Meals' | 'Add-ons' | 'Drinks' = 'Meals';
+      let cat = 'Meals';
       const nameLower = p.name.toLowerCase();
       if (nameLower.includes('add-on') || nameLower.includes('extra') || nameLower.includes('add on') || nameLower.includes('patty') || nameLower.includes('ginabot') && nameLower.includes('add')) {
         cat = 'Add-ons';
@@ -822,7 +892,7 @@ export default function BossRicePOS() {
     if (audioEnabled) playSound('success');
   };
 
-  // --- PRODUCT MANAGEMENT EDITOR (NAME & PRICE) ---
+  // --- PRODUCT MANAGEMENT EDITOR (NAME & PRICE & CATEGORY) ---
   const handleUpdateProduct = async (pId: number) => {
     const trimmedName = editingProductName.trim();
     if (!trimmedName) {
@@ -834,28 +904,37 @@ export default function BossRicePOS() {
       showNotification('Please enter a valid price greater than ₱0');
       return;
     }
+    const trimmedCat = editingProductCategory.trim() || 'Meals';
 
     setSyncStatus('syncing');
     try {
       const { error } = await supabase
         .from('products')
-        .update({ name: trimmedName, price: rawVal })
+        .update({ name: trimmedName, price: rawVal, emoji: trimmedCat })
         .eq('id', pId);
 
       if (error) throw error;
-      setProducts(prev => prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal } : p));
+      setProducts(prev => {
+        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat } : p);
+        return mapLoadedProducts(updated);
+      });
       setEditingProductId(null);
       setEditingProductName('');
       setEditingProductPrice('');
+      setEditingProductCategory('');
       setSyncStatus('online');
-      showNotification('Product name and price saved successfully!');
+      showNotification('Product details saved successfully!');
       if (audioEnabled) playSound('success');
     } catch (e) {
       console.warn("DB product edit failed, applying locally: ", e);
-      setProducts(prev => prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal } : p));
+      setProducts(prev => {
+        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat } : p);
+        return mapLoadedProducts(updated);
+      });
       setEditingProductId(null);
       setEditingProductName('');
       setEditingProductPrice('');
+      setEditingProductCategory('');
       setSyncStatus('offline');
       showNotification('Product details modified locally (offline)');
     }
@@ -1266,9 +1345,14 @@ export default function BossRicePOS() {
     }
     setSyncStatus('syncing');
 
+    let finalCategory = newProdCategory;
+    if (newProdCategory === '__add_custom__' || isAddingCustomCategory) {
+      finalCategory = customCategoryName.trim() || 'Meals';
+    }
+
     const freshProduct = {
       name: newProdName.trim(),
-      emoji: newProdEmoji.trim() || '🍱',
+      emoji: finalCategory, // Store category string inside the DB's emoji field
       price: priceNum,
       active: true
     };
@@ -1276,10 +1360,13 @@ export default function BossRicePOS() {
     try {
       const { data, error } = await supabase.from('products').insert([freshProduct]).select().single();
       if (error) throw error;
-      setProducts(prev => [...prev, data]);
+      const parsedData = mapLoadedProducts([data])[0];
+      setProducts(prev => [...prev, parsedData]);
       setNewProdName('');
       setNewProdPrice('');
-      setNewProdEmoji('🍱');
+      setNewProdCategory('Meals');
+      setCustomCategoryName('');
+      setIsAddingCustomCategory(false);
       if (audioEnabled) playSound('bell');
       showNotification('Success! Inserted on live menus.');
       setSyncStatus('online');
@@ -1290,11 +1377,14 @@ export default function BossRicePOS() {
         id: Date.now(),
         ...freshProduct
       };
-      setProducts(prev => [...prev, localAlt]);
-      localStorage.setItem('br_menu_cached', JSON.stringify([...products, localAlt]));
+      const parsedLocalAlt = mapLoadedProducts([localAlt])[0];
+      setProducts(prev => [...prev, parsedLocalAlt]);
+      localStorage.setItem('br_menu_cached', JSON.stringify(mapLoadedProducts([...products, parsedLocalAlt])));
       setNewProdName('');
       setNewProdPrice('');
-      setNewProdEmoji('🍱');
+      setNewProdCategory('Meals');
+      setCustomCategoryName('');
+      setIsAddingCustomCategory(false);
       showNotification('Saved locally (Offline mode)');
     }
   };
@@ -1889,18 +1979,18 @@ export default function BossRicePOS() {
 
                       {/* Categories list */}
                       <div className="flex gap-1.5 p-1 bg-zinc-950 rounded-xl border border-zinc-850 select-none overflow-x-auto w-full md:w-auto">
-                        {(['All', 'Meals', 'Add-ons', 'Drinks'] as const).map(cat => (
+                        {['All', ...dynamicCategories].map(cat => (
                           <button
                             key={cat}
                             onClick={() => { handleTactileClick(); setSelectedCategory(cat); }}
-                            className={`px-4 py-2 rounded-lg text-xs font-display uppercase tracking-wider font-semibold transition-all ${
+                            className={`px-4 py-2 rounded-lg text-xs font-display uppercase tracking-wider font-semibold transition-all shrink-0 ${
                               selectedCategory === cat 
                                 ? 'bg-zinc-900 text-white border border-zinc-850' 
                                 : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                           >
-                            {cat === 'Meals' ? '🍱 ' : cat === 'Add-ons' ? '🍟 ' : cat === 'Drinks' ? '🥤 ' : ''}
-                            {cat}
+                            <span>{getCategoryEmoji(cat)} </span>
+                            <span>{cat}</span>
                           </button>
                         ))}
                       </div>
@@ -2389,15 +2479,48 @@ export default function BossRicePOS() {
                           </div>
                           
                           <div className="flex flex-col gap-1.5">
-                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Icon Emoji</label>
-                            <input 
-                              type="text" 
-                              value={newProdEmoji}
-                              onChange={(e) => setNewProdEmoji(e.target.value)}
-                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-center text-zinc-200 outline-none focus:border-amber-500 transition"
-                            />
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Category</label>
+                            <select 
+                              value={newProdCategory}
+                              onChange={(e) => {
+                                setNewProdCategory(e.target.value);
+                                if (e.target.value === '__add_custom__') {
+                                  setIsAddingCustomCategory(true);
+                                } else {
+                                  setIsAddingCustomCategory(false);
+                                }
+                              }}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none focus:border-amber-500 transition cursor-pointer"
+                            >
+                              {dynamicCategories.map(cat => (
+                                <option key={cat} value={cat}>
+                                  {cat}
+                                </option>
+                              ))}
+                              <option value="__add_custom__">
+                                ➕ Custom Category...
+                              </option>
+                            </select>
                           </div>
                         </div>
+
+                        {/* Animated input for custom category */}
+                        {isAddingCustomCategory && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: -5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="flex flex-col gap-1.5 bg-zinc-950/40 border border-zinc-850 p-3 rounded-xl"
+                          >
+                            <label className="text-[9px] font-display uppercase tracking-wider text-amber-500 font-bold">New Category Name</label>
+                            <input 
+                              type="text" 
+                              placeholder="e.g. Desserts" 
+                              value={customCategoryName}
+                              onChange={(e) => setCustomCategoryName(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-display text-zinc-200 placeholder-zinc-700 outline-none focus:border-amber-500 transition"
+                            />
+                          </motion.div>
+                        )}
 
                         <button 
                           onClick={triggerAddProduct}
@@ -2423,7 +2546,7 @@ export default function BossRicePOS() {
                                   {editingProductId === p.id ? (
                                     <div className="flex flex-col gap-2 mt-0.5 w-full">
                                       <div className="flex items-center gap-1.5 w-full">
-                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-10 shrink-0 font-display">Title:</span>
+                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-12 shrink-0 font-display">Title:</span>
                                         <input 
                                           type="text"
                                           value={editingProductName}
@@ -2433,26 +2556,40 @@ export default function BossRicePOS() {
                                         />
                                       </div>
                                       <div className="flex items-center gap-1.5 w-full">
-                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-10 shrink-0 font-display">Price:</span>
+                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-12 shrink-0 font-display">Price:</span>
                                         <input 
                                           type="number"
                                           value={editingProductPrice}
                                           onChange={(e) => setEditingProductPrice(e.target.value)}
-                                          className="bg-zinc-900 border border-zinc-800 p-1 p-1 px-2.5 rounded font-mono text-[11px] text-amber-500 focus:outline-none focus:border-red-500 w-24 shrink-0"
+                                          className="bg-zinc-900 border border-zinc-800 p-1 px-2.5 rounded font-mono text-[11px] text-amber-500 focus:outline-none focus:border-red-500 w-24 shrink-0"
                                           placeholder="Price ₱"
                                         />
-                                        <div className="flex gap-1.5 ml-auto">
+                                      </div>
+                                      <div className="flex items-center gap-1.5 w-full">
+                                        <span className="text-[9px] uppercase font-bold text-zinc-500 w-12 shrink-0 font-display">Category:</span>
+                                        <select 
+                                          value={editingProductCategory}
+                                          onChange={(e) => setEditingProductCategory(e.target.value)}
+                                          className="bg-zinc-900 border border-zinc-800 p-1 px-2.5 rounded text-xs text-zinc-200 outline-none focus:outline-none focus:border-red-500 flex-1 cursor-pointer"
+                                        >
+                                          {dynamicCategories.map(cat => (
+                                            <option key={cat} value={cat}>
+                                              {cat}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <div className="flex gap-1.5 ml-auto shrink-0">
                                           <button 
                                             onClick={() => handleUpdateProduct(p.id)}
                                             title="Save updates"
-                                            className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 hover:scale-105 active:scale-95 transition"
+                                            className="p-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700 hover:scale-105 active:scale-95 transition cursor-pointer"
                                           >
                                             <Check className="w-3.5 h-3.5" />
                                           </button>
                                           <button 
                                             onClick={() => setEditingProductId(null)}
                                             title="Cancel action"
-                                            className="p-1 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-750 hover:scale-105 active:scale-95 transition"
+                                            className="p-1.5 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-750 hover:scale-105 active:scale-95 transition cursor-pointer"
                                           >
                                             <X className="w-3.5 h-3.5" />
                                           </button>
@@ -2464,13 +2601,17 @@ export default function BossRicePOS() {
                                       <h6 className="text-xs font-display font-medium uppercase tracking-wide text-zinc-200">{p.name}</h6>
                                       <span className="text-[10px] font-mono text-zinc-550 block mt-0.5 flex items-center gap-2">
                                         <span className="text-amber-500 font-bold">₱{p.price}</span>
+                                        <span className="text-[9px] font-display uppercase font-semibold text-zinc-500 bg-zinc-950/60 border border-zinc-850 px-1.5 py-0.5 rounded">
+                                          {p.category}
+                                        </span>
                                         <button 
                                           onClick={() => { 
                                             setEditingProductId(p.id); 
                                             setEditingProductName(p.name);
                                             setEditingProductPrice(p.price.toString()); 
+                                            setEditingProductCategory(p.category || 'Meals');
                                           }}
-                                          className="text-[9px] text-amber-500 hover:underline uppercase flex items-center gap-0.5"
+                                          className="text-[9px] text-amber-500 hover:underline uppercase flex items-center gap-0.5 ml-1"
                                         >
                                           <Edit className="w-2.5 h-2.5" /> Edit
                                         </button>
@@ -2482,7 +2623,7 @@ export default function BossRicePOS() {
                               <button 
                                 onClick={() => triggerDeactivateProduct(p)}
                                 title="Deactivate/Erase product"
-                                className="p-2 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-lg border border-red-500/10 transition active:scale-95"
+                                className="p-2 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-lg border border-red-500/10 transition active:scale-95 shrink-0"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
