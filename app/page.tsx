@@ -222,6 +222,7 @@ export default function BossRicePOS() {
   // --- Core POS STATE ---
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<{ [id: number]: number }>({});
+  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [allOrders, setAllOrders] = useState<Order[]>([]);
@@ -1766,79 +1767,80 @@ export default function BossRicePOS() {
         <div className="flex flex-col h-screen overflow-hidden">
           
           {/* HEADER */}
-          <header className="flex-none bg-zinc-900 border-b border-zinc-800 px-6 py-4 flex items-center justify-between shadow-md relative z-30">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-gradient-to-tr from-red-600 to-amber-500 rounded-xl flex items-center justify-center font-display font-extrabold text-white text-sm tracking-tight shadow-lg shadow-red-500/10">
+          <header className="flex-none bg-zinc-900 border-b border-zinc-800 px-3 py-3 md:px-6 md:py-4 flex items-center justify-between shadow-md relative z-30">
+            <div className="flex items-center gap-2.5 md:gap-4 min-w-0">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-tr from-red-600 to-amber-500 rounded-lg md:rounded-xl flex items-center justify-center font-display font-extrabold text-white text-xs md:text-sm tracking-tight shadow-lg shadow-red-500/10 shrink-0">
                 BR
               </div>
-              <div>
-                <h1 className="text-xl font-display font-black tracking-tight text-white leading-none">
+              <div className="min-w-0">
+                <h1 className="text-base md:text-xl font-display font-black tracking-tight text-white leading-none">
                   BOSS <span className="text-red-500">RICE</span>
                 </h1>
-                <div className="flex items-center gap-2 mt-1">
-                  <p className="text-[10px] uppercase font-display tracking-widest text-zinc-500 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    Terminal Station
+                <div className="flex items-center gap-1.5 mt-0.5 md:mt-1 min-w-0">
+                  <p className="text-[9px] md:text-[10px] uppercase font-display tracking-widest text-zinc-500 flex items-center gap-1 shrink-0">
+                    <span className="w-1 h-1 md:w-1.5 md:h-1.5 rounded-full bg-emerald-500" />
+                    Terminal
                   </p>
                   {myActiveShift && currentRole === 'cashier' && (
-                    <span className="text-[9px] uppercase font-mono bg-red-950/40 text-red-400 border border-red-900/30 px-2 py-0.5 rounded flex items-center gap-1">
-                      <span className="inline-block w-1 h-1 rounded-full bg-red-500" />
-                      {myActiveShift.cashier_name} · {myActiveShift.branch} · Beg: ₱{myActiveShift.beginning_balance}
+                    <span className="text-[8px] md:text-[9px] uppercase font-mono bg-red-950/40 text-red-400 border border-red-900/30 px-1.5 py-0.5 rounded flex items-center gap-1 truncate max-w-[120px] xs:max-w-none">
+                      <span className="inline-block w-1 h-1 rounded-full bg-red-500 shrink-0" />
+                      <span className="truncate">{myActiveShift.cashier_name} @ {myActiveShift.branch}</span>
+                      <span className="hidden md:inline">· Beg: ₱{myActiveShift.beginning_balance}</span>
                     </span>
                   )}
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5 md:gap-4 shrink-0">
               {/* SYNC INDICATOR */}
               <div 
                 onClick={() => bootstrapPOS()}
                 title="Force refresh database sync"
-                className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-850 py-1.5 px-3 rounded-lg cursor-pointer hover:bg-zinc-850 transition"
+                className="flex items-center gap-1 bg-zinc-950 border border-zinc-850 py-1 px-2 md:py-1.5 md:px-3 rounded-lg cursor-pointer hover:bg-zinc-850 transition"
               >
                 {syncStatus === 'online' && (
                   <>
-                    <Wifi className="w-3.5 h-3.5 text-emerald-500" />
-                    <span className="text-[9px] uppercase tracking-wider font-display text-emerald-500 font-semibold">Live Database</span>
+                    <Wifi className="w-3 h-3 md:w-3.5 md:h-3.5 text-emerald-500 shrink-0" />
+                    <span className="hidden sm:inline text-[9px] uppercase tracking-wider font-display text-emerald-500 font-semibold">Live Database</span>
                   </>
                 )}
                 {syncStatus === 'syncing' && (
                   <>
-                    <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-                    <span className="text-[9px] uppercase tracking-wider font-display text-amber-500 font-semibold">Syncing</span>
+                    <RefreshCw className="w-3 h-3 md:w-3.5 md:h-3.5 text-amber-500 animate-spin shrink-0" />
+                    <span className="hidden sm:inline text-[9px] uppercase tracking-wider font-display text-amber-500 font-semibold">Syncing</span>
                   </>
                 )}
                 {syncStatus === 'offline' && (
                   <>
-                    <WifiOff className="w-3.5 h-3.5 text-zinc-500 animate-pulse" />
-                    <span className="text-[9px] uppercase tracking-wider font-display text-zinc-500 font-semibold">Offline (Local)</span>
+                    <WifiOff className="w-3 h-3 md:w-3.5 md:h-3.5 text-zinc-500 animate-pulse shrink-0" />
+                    <span className="hidden sm:inline text-[9px] uppercase tracking-wider font-display text-zinc-500 font-semibold">Offline (Local)</span>
                   </>
                 )}
               </div>
 
               {/* CLOCK */}
-              <div className="text-xs font-mono font-medium tracking-widest bg-zinc-950 border border-zinc-850 py-1.5 px-3 rounded-lg text-zinc-400">
+              <div className="hidden sm:block text-xs font-mono font-medium tracking-widest bg-zinc-950 border border-zinc-850 py-1.5 px-3 rounded-lg text-zinc-400">
                 {currentTime}
               </div>
 
               {/* ADAPTIVE ROLE TAB */}
-              <div className={`text-[10px] font-display font-bold px-3 py-1.5 rounded-lg border uppercase tracking-wider flex items-center gap-1 ${
+              <div className={`text-[9px] md:text-[10px] font-display font-bold px-2 py-1 md:px-3 md:py-1.5 rounded-lg border uppercase tracking-wider flex items-center gap-0.5 md:gap-1 shrink-0 ${
                 currentRole === 'admin' 
                   ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
                   : 'bg-red-500/10 text-red-400 border-red-500/20'
               }`}>
                 <span>{currentRole === 'admin' ? '👑' : '🧾'}</span>
-                <span>{currentRole}</span>
+                <span className="hidden xs:inline">{currentRole}</span>
               </div>
 
               {/* LOGOUT */}
               <button 
                 onClick={attemptLogout}
                 title="Log out register"
-                className="p-2 rounded-lg bg-zinc-800 text-zinc-400 hover:text-red-500 transition hover:bg-red-500/10 active:scale-95"
+                className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-400 hover:text-red-500 transition hover:bg-red-500/10 active:scale-95 shrink-0"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-3.5 h-3.5 md:w-4 md:h-4" />
               </button>
             </div>
           </header>
@@ -1850,92 +1852,92 @@ export default function BossRicePOS() {
             <main className="flex-1 flex flex-col min-w-0 bg-zinc-950">
               
               {/* NAV PRESETS */}
-              <section className="flex-none bg-zinc-900/50 border-b border-zinc-900/90 p-4 flex gap-2 overflow-x-auto select-none">
+              <section className="flex-none bg-zinc-900/50 border-b border-zinc-900/90 p-2.5 md:p-4 flex gap-1.5 overflow-x-auto select-none scrollbar-none">
                 <button 
                   onClick={() => { handleTactileClick(); setActiveTab('pos'); }}
-                  className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                  className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                     activeTab === 'pos' 
                       ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                       : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                   }`}
                 >
-                  <Grid className="w-3.5 h-3.5" /> Order Grid
+                  <Grid className="w-3 md:w-3.5 h-3 md:h-3.5" /> Order Grid
                 </button>
 
                 {currentRole === 'admin' ? (
                   <>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('reports'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'reports' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <TrendingUp className="w-3.5 h-3.5" /> Sales Reports
+                      <TrendingUp className="w-3 md:w-3.5 h-3 md:h-3.5" /> Sales Reports
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('products'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
                         activeTab === 'products' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <Settings className="w-3.5 h-3.5" /> Products Tab
+                      <Settings className="w-3 md:w-3.5 h-3 md:h-3.5" /> Products Tab
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('shifts'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
                         activeTab === 'shifts' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <MapPin className="w-3.5 h-3.5 text-amber-500" /> Cashier Shifts & Branches
+                      <MapPin className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Shifts & Branches
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('staff'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'staff' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                          : 'bg-zinc-905 text-zinc-400 border-zinc-805 hover:text-zinc-200'
                       }`}
                     >
-                      <UserPlus className="w-3.5 h-3.5 text-emerald-500" /> Staff Settings
+                      <UserPlus className="w-3 md:w-3.5 h-3 md:h-3.5 text-emerald-500" /> Staff
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'expenses' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <Coins className="w-3.5 h-3.5 text-red-500" /> Expenses Ledger
+                      <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-red-500" /> Expenses
                     </button>
                   </>
                 ) : (
                   <>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('myshift'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'myshift' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <Briefcase className="w-3.5 h-3.5" /> My Cashier Shift
+                      <Briefcase className="w-3 md:w-3.5 h-3 md:h-3.5" /> My Shift
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
-                      className={`px-4 py-2 text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'expenses' 
                           ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      <Coins className="w-3.5 h-3.5 text-rose-500" /> Log Expenses
+                      <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-rose-500" /> Log Expenses
                     </button>
                   </>
                 )}
@@ -1943,47 +1945,47 @@ export default function BossRicePOS() {
                 {/* AUDIO TOGGLE */}
                 <button
                   onClick={() => { setAudioEnabled(!audioEnabled); if (!audioEnabled) playSound('success'); }}
-                  className={`ml-auto px-3.5 py-2 text-xs rounded-lg uppercase tracking-wider font-display font-semibold transition border flex items-center gap-1 ${
+                  className={`ml-auto px-2.5 py-1.5 md:px-3.5 md:py-2 text-[11px] md:text-xs rounded-lg uppercase tracking-wider font-display font-semibold transition border flex items-center gap-1 whitespace-nowrap ${
                     audioEnabled ? 'bg-zinc-950 text-amber-500 border-amber-500/20' : 'bg-zinc-950 text-zinc-650 border-zinc-850'
                   }`}
                 >
-                  🔊 {audioEnabled ? 'Sound On' : 'Silent'}
+                  🔊 {audioEnabled ? 'Sound' : 'Mute'}
                 </button>
               </section>
 
               {/* VIEW SWITCHER */}
-              <div className="flex-1 overflow-y-auto p-6">
+              <div className="flex-1 overflow-y-auto p-3 md:p-6">
                 
                 {/* A. ordered grids */}
                 {activeTab === 'pos' && (
                   <div className="flex flex-col gap-6">
                     
                     {/* FILTERS PANEL */}
-                    <div className="bg-zinc-900/40 border border-zinc-900 p-4 rounded-2xl flex flex-col md:flex-row gap-4 items-center justify-between">
+                    <div className="bg-zinc-900/40 border border-zinc-900 p-3 md:p-4 rounded-2xl flex flex-col md:flex-row gap-3 md:gap-4 items-center justify-between">
                       {/* Search */}
                       <div className="relative w-full md:w-72">
-                        <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3.5" />
+                        <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-3" />
                         <input 
                           type="text" 
                           placeholder="Search menu items..." 
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-red-600 transition"
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2 pl-9 pr-4 text-xs md:text-sm text-zinc-200 placeholder-zinc-650 focus:outline-none focus:border-red-600 transition"
                         />
                         {searchQuery && (
-                          <button onClick={() => setSearchQuery('')} className="absolute right-3 top-3.5 text-zinc-500 hover:text-zinc-300">
+                          <button onClick={() => setSearchQuery('')} className="absolute right-3 top-3 text-zinc-500 hover:text-zinc-300">
                             <X className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
 
                       {/* Categories list */}
-                      <div className="flex gap-1.5 p-1 bg-zinc-950 rounded-xl border border-zinc-850 select-none overflow-x-auto w-full md:w-auto">
+                      <div className="flex gap-1.5 p-1 bg-zinc-950 rounded-xl border border-zinc-850 select-none overflow-x-auto w-full md:w-auto scrollbar-none">
                         {['All', ...dynamicCategories].map(cat => (
                           <button
                             key={cat}
                             onClick={() => { handleTactileClick(); setSelectedCategory(cat); }}
-                            className={`px-4 py-2 rounded-lg text-xs font-display uppercase tracking-wider font-semibold transition-all shrink-0 ${
+                            className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg text-[11px] md:text-xs font-display uppercase tracking-wider font-semibold transition-all shrink-0 ${
                               selectedCategory === cat 
                                 ? 'bg-zinc-900 text-white border border-zinc-850' 
                                 : 'text-zinc-500 hover:text-zinc-300'
@@ -2002,7 +2004,7 @@ export default function BossRicePOS() {
                         <p className="text-zinc-500 text-sm font-display uppercase tracking-wide">No active meals match your query.</p>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-4">
                         {productsWithCategoriesAndFilters.map(p => {
                           const qty = cart[p.id] || 0;
                           return (
@@ -2010,25 +2012,25 @@ export default function BossRicePOS() {
                               whileTap={{ scale: 0.97 }}
                               onClick={() => addToCart(p.id)}
                               key={p.id}
-                              className={`bg-zinc-900 border text-left p-4 rounded-2xl cursor-pointer transition relative overflow-hidden flex flex-col justify-between h-36 border-zinc-800 hover:border-zinc-700/80 hover:bg-zinc-850 ${
-                                qty > 0 ? 'ring-2 ring-red-500/80 ring-offset-2 ring-offset-zinc-950border-red-600/50' : ''
+                              className={`bg-zinc-900 border text-left p-3 sm:p-4 rounded-xl sm:rounded-2xl cursor-pointer transition relative overflow-hidden flex flex-col justify-between h-30 sm:h-36 border-zinc-800 hover:border-zinc-700/80 hover:bg-zinc-850 ${
+                                qty > 0 ? 'ring-2 ring-red-500/80 ring-offset-2 ring-offset-zinc-950 border-red-600/50' : ''
                               }`}
                             >
                               <div className="flex items-start justify-between">
-                                <span className="text-3xl filter drop-shadow bg-zinc-950 w-11 h-11 rounded-xl flex items-center justify-center border border-zinc-850">{p.emoji}</span>
+                                <span className="text-xl sm:text-2xl filter drop-shadow bg-zinc-950 w-9 h-9 sm:w-11 sm:h-11 rounded-lg sm:rounded-xl flex items-center justify-center border border-zinc-850">{p.emoji}</span>
                                 {qty > 0 && (
-                                  <span className="bg-red-600 text-white text-[10px] font-mono font-bold w-6 h-6 rounded-lg flex items-center justify-center animate-bounce shadow">
+                                  <span className="bg-red-600 text-white text-[9px] sm:text-[10px] font-mono font-bold w-5 h-5 sm:w-6 sm:h-6 rounded-md sm:rounded-lg flex items-center justify-center animate-bounce shadow">
                                     {qty}
                                   </span>
                                 )}
                               </div>
-                              <div className="mt-4">
-                                <h4 className="text-xs font-display font-bold line-clamp-2 leading-snug tracking-wide uppercase text-zinc-100">
+                              <div className="mt-2.5 sm:mt-4">
+                                <h4 className="text-[10px] xs:text-xs font-display font-bold line-clamp-2 leading-snug tracking-wide uppercase text-zinc-100">
                                   {p.name}
                                 </h4>
-                                <div className="flex items-center justify-between mt-1">
-                                  <span className="text-sm font-mono font-bold text-amber-500">₱{p.price}</span>
-                                  <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-display font-medium">
+                                <div className="flex items-center justify-between mt-1 min-w-0">
+                                  <span className="text-xs xs:text-sm font-mono font-bold text-amber-500 shrink-0">₱{p.price}</span>
+                                  <span className="text-[8px] xs:text-[9px] uppercase tracking-wider text-zinc-550 font-display font-medium truncate ml-1">
                                     {p.category}
                                   </span>
                                 </div>
@@ -2991,8 +2993,26 @@ export default function BossRicePOS() {
               </div>
             </main>
 
+            {/* FLOATING MOBILE CART BUTTON */}
+            {activeTab === 'pos' && (
+              <div className="fixed bottom-5 right-5 z-40 md:hidden">
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => { handleTactileClick(); setIsMobileCartOpen(true); }}
+                  className="w-14 h-14 bg-red-600 hover:bg-red-700 border border-red-500 rounded-full flex items-center justify-center text-white shadow-2xl relative cursor-pointer"
+                >
+                  <ShoppingCart className="w-6 h-6 animate-pulse" />
+                  {totalItemCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-amber-500 text-zinc-950 font-mono text-[11px] font-bold w-6 h-6 rounded-full flex items-center justify-center border-2 border-zinc-900">
+                      {totalItemCount}
+                    </span>
+                  )}
+                </motion.button>
+              </div>
+            )}
+
             {/* RIGHT SIDEBAR: CART CONTAINER */}
-            <aside className="w-96 flex-none bg-zinc-900 border-l border-zinc-850 flex flex-col">
+            <aside className={`${isMobileCartOpen ? 'fixed inset-0 z-45 bg-zinc-900 flex' : 'hidden'} md:relative md:flex w-full md:w-96 flex-none bg-zinc-900 border-l border-zinc-850 flex flex-col`}>
               
               {/* CART HEADER */}
               <header className="flex-none p-5 border-b border-zinc-850/80 flex items-center justify-between">
@@ -3008,13 +3028,22 @@ export default function BossRicePOS() {
                   )}
                 </div>
 
-                <button 
-                  onClick={clearEntireCart}
-                  disabled={totalItemCount === 0}
-                  className="text-[10px] font-display font-medium uppercase tracking-wider text-zinc-500 hover:text-red-500 transition disabled:opacity-30 disabled:hover:text-zinc-550 cursor-pointer"
-                >
-                  Clear all
-                </button>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={clearEntireCart}
+                    disabled={totalItemCount === 0}
+                    className="text-[10px] font-display font-medium uppercase tracking-wider text-zinc-500 hover:text-red-500 transition disabled:opacity-30 disabled:hover:text-zinc-550 cursor-pointer"
+                  >
+                    Clear all
+                  </button>
+                  <button
+                    onClick={() => setIsMobileCartOpen(false)}
+                    className="md:hidden p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white rounded-lg transition shrink-0 cursor-pointer"
+                    title="Close basket"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </header>
 
               {/* ITEMS SCROLLER */}
@@ -3082,7 +3111,7 @@ export default function BossRicePOS() {
                 </div>
 
                 <button 
-                  onClick={() => { handleTactileClick(); setChargeModalOpen(true); }}
+                  onClick={() => { handleTactileClick(); setChargeModalOpen(true); setIsMobileCartOpen(false); }}
                   disabled={totalItemCount === 0}
                   className="w-full py-4 rounded-2xl bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-display font-medium text-xs uppercase tracking-widest font-bold select-none transition-all cursor-pointer shadow-lg shadow-red-600/10 active:scale-[0.98]"
                 >
