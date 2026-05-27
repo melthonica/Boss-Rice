@@ -9,7 +9,7 @@ import {
   Coins, TrendingUp, Grid, RefreshCw, Smartphone, 
   User, Database, Calendar, Briefcase, PlusCircle,
   Edit, Save, Download, UserPlus, MapPin, AlertTriangle, FileSpreadsheet, Lock,
-  ChevronLeft, ChevronRight, Sparkles
+  ChevronLeft, ChevronRight, Sparkles, Package, Truck, Boxes
 } from 'lucide-react';
 
 // --- TYPES ---
@@ -20,6 +20,23 @@ interface Product {
   price: number;
   active: boolean;
   category?: string;
+  cost?: number;
+  variant?: string;
+}
+
+interface InventoryTransaction {
+  id: string;
+  itemName: string;
+  qty: number;
+  variant: string;
+  cost: number;
+  type: 'stock-in' | 'stock-out';
+  status: 'pending-delivery' | 'completed';
+  destinationBranch: string;
+  deliveryDate: string;
+  arrivalDate?: string;
+  performedBy: string;
+  reason?: string;
 }
 
 interface Order {
@@ -42,6 +59,7 @@ interface PosUser {
   password?: string;
   role: 'admin' | 'cashier';
   created_at?: string;
+  branch?: string;
 }
 
 interface Shift {
@@ -131,6 +149,20 @@ const getCategoryEmoji = (category?: string, overrideEmoji?: string): string => 
 };
 
 const mapLoadedProducts = (prods: Product[]): Product[] => {
+  let savedCosts: { [key: string]: number } = {};
+  let savedVariants: { [key: string]: string } = {};
+  
+  if (typeof window !== 'undefined') {
+    try {
+      const cStr = localStorage.getItem('br_product_costs_off');
+      const vStr = localStorage.getItem('br_product_variants_off');
+      if (cStr) savedCosts = JSON.parse(cStr);
+      if (vStr) savedVariants = JSON.parse(vStr);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   return prods.map(p => {
     let cat = p.category;
     if (!cat) {
@@ -155,10 +187,15 @@ const mapLoadedProducts = (prods: Product[]): Product[] => {
       renderEmoji = getCategoryEmoji(cat);
     }
     
+    const cost = savedCosts[p.name] !== undefined ? savedCosts[p.name] : (p.cost || 0);
+    const variant = savedVariants[p.name] !== undefined ? savedVariants[p.name] : (p.variant || 'Regular');
+
     return {
       ...p,
       category: cat,
-      emoji: renderEmoji
+      emoji: renderEmoji,
+      cost,
+      variant
     };
   });
 };
@@ -186,8 +223,48 @@ export default function BossRicePOS() {
   const [newStaffUsername, setNewStaffUsername] = useState('');
   const [newStaffPassword, setNewStaffPassword] = useState('');
   const [newStaffRole, setNewStaffRole] = useState<'admin' | 'cashier'>('cashier');
+  const [newStaffBranch, setNewStaffBranch] = useState('Main Branch');
   const [passwordChangeUser, setPasswordChangeUser] = useState('');
   const [passwordChangeNew, setPasswordChangeNew] = useState('');
+  const [passwordChangeBranch, setPasswordChangeBranch] = useState('Main Branch');
+  const [branches, setBranches] = useState<string[]>([]);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [confirmingDeleteBranch, setConfirmingDeleteBranch] = useState<string | null>(null);
+  const [confirmingClearTransactions, setConfirmingClearTransactions] = useState(false);
+  const [confirmingDeleteTxId, setConfirmingDeleteTxId] = useState<string | null>(null);
+
+  // --- DEVELOPER PANEL & SUBSCRIPTION ENGINE ---
+  const [subStart, setSubStart] = useState<string>('2026-05-01');
+  const [subEnd, setSubEnd] = useState<string>('2026-12-31');
+  const [maxBranches, setMaxBranches] = useState<number>(5);
+  const [maxDevices, setMaxDevices] = useState<number>(10);
+  const [myDeviceId, setMyDeviceId] = useState<string>('');
+  const [registeredDevices, setRegisteredDevices] = useState<string[]>([]);
+  const [isDeveloperMode, setIsDeveloperMode] = useState<boolean>(false);
+  const [isDeviceLimitBlocked, setIsDeviceLimitBlocked] = useState<boolean>(false);
+  const [devLockPasscode, setDevLockPasscode] = useState<string>('');
+  const [devLockError, setDevLockError] = useState<string>('');
+
+  // --- BATCH STOCK TAGGING LIST STATES ---
+  const [isBatchMode, setIsBatchMode] = useState<boolean>(false);
+  const [batchItems, setBatchItems] = useState<{itemName: string, qty: number, variant: string, cost: number}[]>([]);
+  const [batchItemSelect, setBatchItemSelect] = useState<string>('');
+  const [batchItemQty, setBatchItemQty] = useState<string>('');
+  const [batchItemVariant, setBatchItemVariant] = useState<string>('Regular');
+  const [batchItemCost, setBatchItemCost] = useState<string>('');
+
+  // New Stock Out custom note
+  const [stockOutNote, setStockOutNote] = useState<string>('');
+
+  // --- EDIT DISPATCH/STOCK TRANSACTION STATES ---
+  const [editingTxId, setEditingTxId] = useState<string | null>(null);
+  const [editingTxItemName, setEditingTxItemName] = useState('');
+  const [editingTxQty, setEditingTxQty] = useState('');
+  const [editingTxVariant, setEditingTxVariant] = useState('');
+  const [editingTxCost, setEditingTxCost] = useState('');
+  const [editingTxDestBranch, setEditingTxDestBranch] = useState('');
+  const [editingTxStatus, setEditingTxStatus] = useState<'pending-delivery' | 'completed'>('pending-delivery');
+  const [editingTxDeliveryDate, setEditingTxDeliveryDate] = useState('');
 
   // --- EXPENSES SYSTEM ---
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -227,16 +304,24 @@ export default function BossRicePOS() {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [allOrders, setAllOrders] = useState<Order[]>([]);
   
+  // --- SUBSCRIPTION STATUS COMPUTATION ---
+  const isSubscriptionValid = useMemo(() => {
+    if (!subStart || !subEnd) return true;
+    const nowStr = new Date().toISOString().substring(0, 10);
+    return nowStr >= subStart && nowStr <= subEnd;
+  }, [subStart, subEnd]);
+
   // --- DYNAMIC FILTER OPTIONS FOR BRANCHES & CASHIERS ---
   const dynamicBranches = useMemo(() => {
     const list = new Set<string>();
+    branches.forEach(b => { if (b) list.add(b); });
     allOrders.forEach(o => { if (o.branch) list.add(o.branch); });
     shifts.forEach(s => { if (s.branch) list.add(s.branch); });
     expenses.forEach(e => { if (e.branch) list.add(e.branch); });
     // Guarantee our typical default ones
     list.add('Main Branch');
     return Array.from(list).sort();
-  }, [allOrders, shifts, expenses]);
+  }, [branches, allOrders, shifts, expenses]);
 
   const dynamicCashiers = useMemo(() => {
     const list = new Set<string>();
@@ -265,7 +350,7 @@ export default function BossRicePOS() {
   const [isInitializing, setIsInitializing] = useState(true);
 
   // --- ACTIVE VIEWS / TAB ---
-  const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift' | 'staff' | 'shifts' | 'expenses'>('pos');
+  const [activeTab, setActiveTab] = useState<'pos' | 'reports' | 'products' | 'myshift' | 'staff' | 'shifts' | 'expenses' | 'inventory' | 'developer'>('pos');
   const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>('daily');
 
   // --- NOTIFICATION / TOAST ---
@@ -288,9 +373,34 @@ export default function BossRicePOS() {
   const [newProdName, setNewProdName] = useState('');
   const [newProdPrice, setNewProdPrice] = useState('');
   const [newProdCategory, setNewProdCategory] = useState('Meals');
+  const [newProdCost, setNewProdCost] = useState('');
+  const [newProdVariant, setNewProdVariant] = useState('Regular');
   const [customCategoryName, setCustomCategoryName] = useState('');
   const [isAddingCustomCategory, setIsAddingCustomCategory] = useState(false);
   const [editingProductCategory, setEditingProductCategory] = useState('');
+  const [editingProductCost, setEditingProductCost] = useState('');
+  const [editingProductVariant, setEditingProductVariant] = useState('');
+
+  // --- INVENTORY MANAGEMENT STATES ---
+  const [inventoryTransactions, setInventoryTransactions] = useState<InventoryTransaction[]>([]);
+  const [activeInventoryTab, setActiveInventoryTab] = useState<'received' | 'stock-in' | 'stock-out'>('received');
+  
+  // New Stock In Form States
+  const [newStockItem, setNewStockItem] = useState('');
+  const [newStockQty, setNewStockQty] = useState('');
+  const [newStockVariant, setNewStockVariant] = useState('Regular');
+  const [newStockCost, setNewStockCost] = useState('');
+  const [newStockDestBranch, setNewStockDestBranch] = useState('Main Branch');
+  const [newStockDeliveryDate, setNewStockDeliveryDate] = useState(
+    new Date().toLocaleDateString('sv').substring(0, 10)
+  );
+
+  // New Stock Out Form States
+  const [selectedStockOutItemKey, setSelectedStockOutItemKey] = useState('');
+  const [stockOutQty, setStockOutQty] = useState('');
+  const [stockOutReason, setStockOutReason] = useState('Damaged');
+  const [inventorySearchQuery, setInventorySearchQuery] = useState('');
+  const [inventoryBranchFilter, setInventoryBranchFilter] = useState('All');
 
   // --- CONFIRMATION MODAL STATE ---
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -550,11 +660,109 @@ export default function BossRicePOS() {
       syncUsers();
       syncShifts();
       syncExpenses();
+      
+      // Load inventory transactions
+      const cachedInv = localStorage.getItem('br_inventory_transactions');
+      const hasClearedAll = localStorage.getItem('br_inventory_cleared_all_v3');
+      if (!hasClearedAll) {
+        setInventoryTransactions([]);
+        localStorage.setItem('br_inventory_transactions', JSON.stringify([]));
+        localStorage.setItem('br_inventory_cleared_all_v3', 'true');
+      } else if (cachedInv) {
+        try {
+          setInventoryTransactions(JSON.parse(cachedInv));
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        setInventoryTransactions([]);
+        localStorage.setItem('br_inventory_transactions', JSON.stringify([]));
+      }
+
+      // Load branches
+      const cachedBr = localStorage.getItem('br_branches_v2');
+      if (cachedBr) {
+        try {
+          setBranches(JSON.parse(cachedBr));
+        } catch (e) {
+          const defaultBr = ['Main Branch', 'Mandaue City Station', 'Cebu CBD Terminal', 'Gaisano Branch', 'Sanciangko Branch'];
+          setBranches(defaultBr);
+          localStorage.setItem('br_branches_v2', JSON.stringify(defaultBr));
+        }
+      } else {
+        const defaultBr = ['Main Branch', 'Mandaue City Station', 'Cebu CBD Terminal', 'Gaisano Branch', 'Sanciangko Branch'];
+        setBranches(defaultBr);
+        localStorage.setItem('br_branches_v2', JSON.stringify(defaultBr));
+      }
+
+      // Load Developer Subscription config from localStorage
+      let sStart = localStorage.getItem('br_sub_start');
+      let sEnd = localStorage.getItem('br_sub_end');
+      let mBranchesStr = localStorage.getItem('br_sub_max_branches');
+      let mDevicesStr = localStorage.getItem('br_sub_max_devices');
+      let dId = localStorage.getItem('br_device_id');
+      let dListStr = localStorage.getItem('br_device_list');
+
+      if (!sStart) {
+        sStart = '2026-05-01';
+        localStorage.setItem('br_sub_start', sStart);
+      }
+      if (!sEnd) {
+        sEnd = '2026-12-31';
+        localStorage.setItem('br_sub_end', sEnd);
+      }
+      if (!mBranchesStr) {
+        mBranchesStr = '5';
+        localStorage.setItem('br_sub_max_branches', mBranchesStr);
+      }
+      if (!mDevicesStr) {
+        mDevicesStr = '10';
+        localStorage.setItem('br_sub_max_devices', mDevicesStr);
+      }
+      if (!dId) {
+        dId = 'dev-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        localStorage.setItem('br_device_id', dId);
+      }
+
+      setSubStart(sStart);
+      setSubEnd(sEnd);
+      setMaxBranches(parseInt(mBranchesStr) || 5);
+      setMaxDevices(parseInt(mDevicesStr) || 10);
+      setMyDeviceId(dId);
+
+      let dList: string[] = [];
+      if (dListStr) {
+        try {
+          dList = JSON.parse(dListStr);
+        } catch (e) {
+          dList = [dId];
+        }
+      } else {
+        dList = [dId];
+      }
+
+      const limitMaxDevices = parseInt(mDevicesStr || '10') || 10;
+      if (!dList.includes(dId)) {
+        if (dList.length < limitMaxDevices) {
+          dList.push(dId);
+          setIsDeviceLimitBlocked(false);
+          localStorage.setItem('br_device_list', JSON.stringify(dList));
+        } else {
+          setIsDeviceLimitBlocked(true);
+        }
+      } else {
+        setIsDeviceLimitBlocked(false);
+      }
+      setRegisteredDevices(dList);
+
       const session = localStorage.getItem('br_session_v1');
       if (session) {
         const parsed = JSON.parse(session);
         setCurrentRole(parsed.role);
         setCurrentUser(parsed.user || null);
+        if (parsed.isDeveloper) {
+          setIsDeveloperMode(true);
+        }
         if (parsed.shift) {
           setMyActiveShift(parsed.shift);
         }
@@ -614,6 +822,25 @@ export default function BossRicePOS() {
   };
 
   const attemptLogin = () => {
+    // Hidden Developer Pin Code Bypass
+    if (selectedRole === 'admin' && enteredPin === '052791') {
+      if (audioEnabled) playSound('success');
+      setLoginError('');
+      setEnteredPin('');
+      setIsDeveloperMode(true);
+      setCurrentUser({ id: 9999, username: 'SysDev', role: 'admin' });
+      setCurrentRole('admin');
+      setActiveTab('developer');
+      localStorage.setItem('br_session_v1', JSON.stringify({
+        role: 'admin',
+        user: { id: 9999, username: 'SysDev', role: 'admin' },
+        time: Date.now(),
+        isDeveloper: true
+      }));
+      showNotification('🔐 Access Granted: Developer Administrative Mode Activated!');
+      return;
+    }
+
     // Authenticate user against dynamic loaded directory with smart fallback
     const matchedUser = users.find(u => {
       if (u.role !== selectedRole) return false;
@@ -646,14 +873,14 @@ export default function BossRicePOS() {
           } catch (e) {
             setMyActiveShift(null);
             setShiftBegBalance('1000');
-            setShiftBranch('Main Branch');
+            setShiftBranch(matchedUser.branch || 'Main Branch');
             setCustomBranchText('');
             setIsShiftOverlayOpen(true);
           }
         } else {
           setMyActiveShift(null);
           setShiftBegBalance('1000');
-          setShiftBranch('Main Branch');
+          setShiftBranch(matchedUser.branch || 'Main Branch');
           setCustomBranchText('');
           setIsShiftOverlayOpen(true);
         }
@@ -681,14 +908,57 @@ export default function BossRicePOS() {
     }
   };
 
-  const attemptLogout = () => {
+  const attemptLogout = async () => {
     handleTactileClick();
+    
+    if (myActiveShift) {
+      const logoutTime = new Date().toISOString();
+      const closedShift = {
+        ...myActiveShift,
+        logout_time: logoutTime
+      };
+      
+      // Update local storage cached historical shifts
+      const cached = localStorage.getItem('br_shifts_cached');
+      let localShifts: Shift[] = cached ? JSON.parse(cached) : [];
+      
+      const existingIdx = localShifts.findIndex(
+        s => s.id === closedShift.id || 
+        (s.login_time === closedShift.login_time && s.cashier_name === closedShift.cashier_name)
+      );
+      if (existingIdx !== -1) {
+        localShifts[existingIdx] = closedShift;
+      } else {
+        localShifts = [closedShift, ...localShifts];
+      }
+      setShifts(localShifts);
+      localStorage.setItem('br_shifts_cached', JSON.stringify(localShifts));
+
+      // Attempt Supabase updates to record the log-out time
+      try {
+        if (closedShift.id) {
+          await supabase
+            .from('pos_shifts')
+            .update({ logout_time: logoutTime })
+            .eq('id', closedShift.id);
+        } else {
+          await supabase
+            .from('pos_shifts')
+            .update({ logout_time: logoutTime })
+            .match({ cashier_name: closedShift.cashier_name, login_time: closedShift.login_time });
+        }
+      } catch (err) {
+        console.warn('Silent fallback: Supabase logout_time update deferred: ', err);
+      }
+    }
+
     localStorage.removeItem('br_session_v1');
     localStorage.removeItem('br_active_shift');
     setCurrentRole(null);
     setCurrentUser(null);
     setMyActiveShift(null);
     setTempUser(null);
+    setIsDeveloperMode(false);
     setCart({});
   };
 
@@ -825,19 +1095,51 @@ export default function BossRicePOS() {
     csvStr += `"Cashier Filter:","${selectedCashierFilter}"\n`;
     csvStr += `"Generated Time:","${new Date().toLocaleTimeString('en-PH')}"\n\n`;
     
-    csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Cashier","Total Val (PHP)","Cash Received","Change Returned","Payment Channel"\n`;
+    csvStr += `"Order No.","Timestamp","Completed Items","Branch Destination","Cashier","Total Revenue (PHP)","Estimated Total Cost (PHP)","Estimated Net Profit (PHP)","Item Breakdown & Costing","Payment Channel"\n`;
     
     let sumTotalSales = 0;
+    let sumTotalCost = 0;
     subset.forEach(o => {
+      let orderCost = 0;
+      const breakdowns: string[] = [];
+
+      o.items.forEach(itemStr => {
+        const match = itemStr.match(/(.+)\s+x\s*(\d+)$/i);
+        if (match) {
+          const itemName = match[1].trim();
+          const qty = parseInt(match[2], 10) || 0;
+          const prod = products.find(p => p.name.toLowerCase() === itemName.toLowerCase());
+          if (prod) {
+            const unitCost = prod.cost || 0;
+            const unitPrice = prod.price || 0;
+            const lineCost = unitCost * qty;
+            const linePrice = unitPrice * qty;
+            const lineProfit = linePrice - lineCost;
+            orderCost += lineCost;
+            breakdowns.push(`${qty}x ${itemName} (Price: ₱${unitPrice} - Cost: ₱${unitCost} = Profit: ₱${unitPrice - unitCost} | Tot.Profit: ₱${lineProfit})`);
+          } else {
+            breakdowns.push(`${qty}x ${itemName} (Price: ? | Cost: 0)`);
+          }
+        } else {
+          breakdowns.push(`${itemStr} (Unparsed)`);
+        }
+      });
+
+      const orderProfit = o.total - orderCost;
+      sumTotalCost += orderCost;
+
       const rawText = o.items.join('; ').replace(/"/g, '""');
+      const breakdownText = breakdowns.join('; ').replace(/"/g, '""');
       const timeString = new Date(o.created_at).toLocaleString('en-PH', { hour12: false });
-      csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}","${o.cashier_name || 'Unassigned'}",${o.total},${o.cash_received || 0},${o.change_given || 0},"${o.payment_method}"\n`;
+      csvStr += `${o.order_number},"${timeString}","${rawText}","${o.branch || 'Main Branch'}","${o.cashier_name || 'Unassigned'}",${o.total},${orderCost},${orderProfit},"${breakdownText}","${o.payment_method}"\n`;
       sumTotalSales += o.total;
     });
 
     csvStr += `\n"SUMMARY METRICS"\n`;
     csvStr += `"Total Volume Count:",${subset.length}\n`;
     csvStr += `"Gross Operational Revenues PHP:",${sumTotalSales}\n`;
+    csvStr += `"Estimated Total Cost of Goods Sold PHP:",${sumTotalCost}\n`;
+    csvStr += `"Estimated Total Sales Net Profit PHP:",${sumTotalSales - sumTotalCost}\n`;
     
     // Sum beginning balance of shifts within range & filters
     const sumBeginningBalance = shifts.reduce((acc, s) => {
@@ -874,10 +1176,12 @@ export default function BossRicePOS() {
     }, 0);
 
     const netValue = sumTotalSales - sumExpenses;
+    const finalNetIncomeAfterCOGSAndExpenses = sumTotalSales - sumTotalCost - sumExpenses;
 
     csvStr += `"Total Shift Beginning Balance PHP:",${sumBeginningBalance}\n`;
     csvStr += `"Total Operational Expenses PHP:",${sumExpenses}\n`;
-    csvStr += `"Total Net Revenue (Gross - Expenses) PHP:",${netValue}\n`;
+    csvStr += `"Estimated Net Operating Revenue (Gross - Expenses) PHP:",${netValue}\n`;
+    csvStr += `"Estimated Final Net Income (Gross - Cost of Goods - Expenses) PHP:",${finalNetIncomeAfterCOGSAndExpenses}\n`;
 
     // Dynamic click triggers browser downloader
     const blobObj = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
@@ -906,6 +1210,30 @@ export default function BossRicePOS() {
       return;
     }
     const trimmedCat = editingProductCategory.trim() || 'Meals';
+    const costVal = parseFloat(editingProductCost) || 0;
+    const variantVal = editingProductVariant.trim() || 'Regular';
+
+    // Find previous item name to remove old lookup if renamed
+    const oldProd = products.find(p => p.id === pId);
+    
+    // Save extra properties locally
+    const savedCostsStr = localStorage.getItem('br_product_costs_off') || '{}';
+    const savedVariantsStr = localStorage.getItem('br_product_variants_off') || '{}';
+    let savedCosts: any = {};
+    let savedVariants: any = {};
+    try {
+      savedCosts = JSON.parse(savedCostsStr);
+      savedVariants = JSON.parse(savedVariantsStr);
+    } catch (e) {}
+    
+    if (oldProd && oldProd.name !== trimmedName) {
+      delete savedCosts[oldProd.name];
+      delete savedVariants[oldProd.name];
+    }
+    savedCosts[trimmedName] = costVal;
+    savedVariants[trimmedName] = variantVal;
+    localStorage.setItem('br_product_costs_off', JSON.stringify(savedCosts));
+    localStorage.setItem('br_product_variants_off', JSON.stringify(savedVariants));
 
     setSyncStatus('syncing');
     try {
@@ -916,26 +1244,30 @@ export default function BossRicePOS() {
 
       if (error) throw error;
       setProducts(prev => {
-        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat } : p);
+        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat, cost: costVal, variant: variantVal } : p);
         return mapLoadedProducts(updated);
       });
       setEditingProductId(null);
       setEditingProductName('');
       setEditingProductPrice('');
       setEditingProductCategory('');
+      setEditingProductCost('');
+      setEditingProductVariant('');
       setSyncStatus('online');
       showNotification('Product details saved successfully!');
       if (audioEnabled) playSound('success');
     } catch (e) {
       console.warn("DB product edit failed, applying locally: ", e);
       setProducts(prev => {
-        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat } : p);
+        const updated = prev.map(p => p.id === pId ? { ...p, name: trimmedName, price: rawVal, emoji: trimmedCat, category: trimmedCat, cost: costVal, variant: variantVal } : p);
         return mapLoadedProducts(updated);
       });
       setEditingProductId(null);
       setEditingProductName('');
       setEditingProductPrice('');
       setEditingProductCategory('');
+      setEditingProductCost('');
+      setEditingProductVariant('');
       setSyncStatus('offline');
       showNotification('Product details modified locally (offline)');
     }
@@ -953,14 +1285,15 @@ export default function BossRicePOS() {
     const payload: PosUser = {
       username: userVal,
       password: pinVal,
-      role: newStaffRole
+      role: newStaffRole,
+      branch: newStaffBranch
     };
 
     setSyncStatus('syncing');
     try {
       const { data, error } = await supabase.from('pos_users').insert([payload]).select();
       if (error) throw error;
-      showNotification(`Registered ${newStaffRole} account: "${userVal}"`);
+      showNotification(`Registered ${newStaffRole} account: "${userVal}" at ${newStaffBranch}`);
       setNewStaffUsername('');
       setNewStaffPassword('');
       syncUsers();
@@ -980,6 +1313,7 @@ export default function BossRicePOS() {
   const handleChangeStaffPassword = async () => {
     const selUser = passwordChangeUser;
     const pinVal = passwordChangeNew.trim();
+    const branchVal = passwordChangeBranch;
     if (!selUser || !pinVal) {
       showNotification('Please select user account and input a new PIN code');
       return;
@@ -989,11 +1323,11 @@ export default function BossRicePOS() {
     try {
       const { error } = await supabase
         .from('pos_users')
-        .update({ password: pinVal })
+        .update({ password: pinVal, branch: branchVal })
         .eq('username', selUser);
 
       if (error) throw error;
-      showNotification(`PIN updated for "${selUser}"`);
+      showNotification(`PIN/Branch updated for "${selUser}"`);
       setPasswordChangeUser('');
       setPasswordChangeNew('');
       syncUsers();
@@ -1001,13 +1335,50 @@ export default function BossRicePOS() {
     } catch (e) {
       console.error(e);
       // update cached list locally
-      const updatedLocalUsers = users.map(u => u.username === selUser ? { ...u, password: pinVal } : u);
+      const updatedLocalUsers = users.map(u => u.username === selUser ? { ...u, password: pinVal, branch: branchVal } : u);
       setUsers(updatedLocalUsers);
       localStorage.setItem('br_users_cached', JSON.stringify(updatedLocalUsers));
-      showNotification('Updated password caching offline');
+      showNotification('Updated password/branch caching offline');
       setPasswordChangeUser('');
       setPasswordChangeNew('');
     }
+  };
+
+  // --- MODULAR BRANCH MANAGEMENT ---
+  const handleCreateBranch = () => {
+    const name = newBranchName.trim();
+    if (!name) {
+      showNotification('Please key in a valid Branch name');
+      return;
+    }
+    if (branches.length >= maxBranches) {
+      showNotification(`Subscription Limit: Your current license allows a maximum of ${maxBranches} active branches. Upgrade inside the Developer Panel.`);
+      return;
+    }
+    if (branches.some(b => b.toLowerCase() === name.toLowerCase())) {
+      showNotification('Error - This branch name already exists!');
+      return;
+    }
+    const updated = [...branches, name];
+    setBranches(updated);
+    localStorage.setItem('br_branches_v2', JSON.stringify(updated));
+    showNotification(`New branch created successfully: "${name}"`);
+    setNewBranchName('');
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleDeleteBranch = (branchToDelete: string) => {
+    if (branchToDelete === 'Main Branch') {
+      showNotification('Strict Restriction: Main Branch cannot be deleted.');
+      setConfirmingDeleteBranch(null);
+      return;
+    }
+    const updated = branches.filter(b => b !== branchToDelete);
+    setBranches(updated);
+    localStorage.setItem('br_branches_v2', JSON.stringify(updated));
+    showNotification(`Branch deleted successfully: "${branchToDelete}"`);
+    setConfirmingDeleteBranch(null);
+    if (audioEnabled) playSound('success');
   };
 
   // --- EXPENSE REGISTER ACTION ---
@@ -1236,7 +1607,7 @@ export default function BossRicePOS() {
       payment_method: payMethod,
       cash_received: cashInput,
       change_given: changeAmount,
-      cashier_role: `${currentUser?.username || 'cashier'} | ${myActiveShift?.branch || 'Main Branch'}`,
+      cashier_role: `${currentUser?.username || 'cashier'} | ${myActiveShift?.branch || 'Main Branch'}${currentUser?.branch && currentUser.branch !== myActiveShift?.branch ? ` (Assigned: ${currentUser.branch})` : ''}`,
       cashier_name: currentUser?.username || 'cashier',
       branch: myActiveShift?.branch || 'Main Branch',
       created_at: new Date().toISOString()
@@ -1358,7 +1729,24 @@ export default function BossRicePOS() {
       active: true
     };
 
+    const costNum = parseFloat(newProdCost) || 0;
+    const variantStr = newProdVariant.trim() || 'Regular';
+
     try {
+      // Save extra properties locally
+      const savedCostsStr = localStorage.getItem('br_product_costs_off') || '{}';
+      const savedVariantsStr = localStorage.getItem('br_product_variants_off') || '{}';
+      let savedCosts: any = {};
+      let savedVariants: any = {};
+      try {
+        savedCosts = JSON.parse(savedCostsStr);
+        savedVariants = JSON.parse(savedVariantsStr);
+      } catch (e) {}
+      savedCosts[freshProduct.name] = costNum;
+      savedVariants[freshProduct.name] = variantStr;
+      localStorage.setItem('br_product_costs_off', JSON.stringify(savedCosts));
+      localStorage.setItem('br_product_variants_off', JSON.stringify(savedVariants));
+
       const { data, error } = await supabase.from('products').insert([freshProduct]).select().single();
       if (error) throw error;
       const parsedData = mapLoadedProducts([data])[0];
@@ -1366,6 +1754,8 @@ export default function BossRicePOS() {
       setNewProdName('');
       setNewProdPrice('');
       setNewProdCategory('Meals');
+      setNewProdCost('');
+      setNewProdVariant('Regular');
       setCustomCategoryName('');
       setIsAddingCustomCategory(false);
       if (audioEnabled) playSound('bell');
@@ -1373,6 +1763,20 @@ export default function BossRicePOS() {
       setSyncStatus('online');
     } catch (err: any) {
       setSyncStatus('offline');
+      // Save extra properties locally
+      const savedCostsStr = localStorage.getItem('br_product_costs_off') || '{}';
+      const savedVariantsStr = localStorage.getItem('br_product_variants_off') || '{}';
+      let savedCosts: any = {};
+      let savedVariants: any = {};
+      try {
+        savedCosts = JSON.parse(savedCostsStr);
+        savedVariants = JSON.parse(savedVariantsStr);
+      } catch (e) {}
+      savedCosts[freshProduct.name] = costNum;
+      savedVariants[freshProduct.name] = variantStr;
+      localStorage.setItem('br_product_costs_off', JSON.stringify(savedCosts));
+      localStorage.setItem('br_product_variants_off', JSON.stringify(savedVariants));
+
       // Save offline simulated increment
       const localAlt: Product = {
         id: Date.now(),
@@ -1384,6 +1788,8 @@ export default function BossRicePOS() {
       setNewProdName('');
       setNewProdPrice('');
       setNewProdCategory('Meals');
+      setNewProdCost('');
+      setNewProdVariant('Regular');
       setCustomCategoryName('');
       setIsAddingCustomCategory(false);
       showNotification('Saved locally (Offline mode)');
@@ -1458,7 +1864,10 @@ export default function BossRicePOS() {
       totalBeginningBalance: 0,
       totalExpenses: 0,
       netRevenue: 0,
-      expectedRegisterCash: 0
+      expectedRegisterCash: 0,
+      totalCOGS: 0,     // Total Cost of Goods Sold
+      grossProfit: 0,   // Gross Profit (revenue - COGS)
+      netProfit: 0      // Net Profit (grossProfit - expenses)
     };
 
     // Calculate sum of beginning balances for selected date range
@@ -1506,6 +1915,22 @@ export default function BossRicePOS() {
       stats.revenue += o.total;
       stats.totalOrders++;
 
+      // Recalculate cost per product sold
+      if (Array.isArray(o.items)) {
+        o.items.forEach(itemStr => {
+          const itemMatch = itemStr.match(/(.+)\sx(\d+)/);
+          let name = itemStr.trim();
+          let itemQty = 1;
+          if (itemMatch) {
+            name = itemMatch[1].trim();
+            itemQty = parseInt(itemMatch[2]) || 1;
+          }
+          const matchedProd = products.find(p => p.name.toLowerCase() === name.toLowerCase());
+          const itemCost = matchedProd?.cost || 0;
+          stats.totalCOGS += itemCost * itemQty;
+        });
+      }
+
       const isGcash = o.payment_method?.toLowerCase().includes('gcash');
       if (isGcash) {
         stats.gcashRevenue += o.total;
@@ -1519,8 +1944,13 @@ export default function BossRicePOS() {
     stats.averageTicket = stats.totalOrders > 0 ? Math.round(stats.revenue / stats.totalOrders) : 0;
     stats.netRevenue = stats.revenue - stats.totalExpenses;
     stats.expectedRegisterCash = stats.cashRevenue + stats.totalBeginningBalance - stats.totalExpenses;
+    
+    // Profit margin recalculations per product sold
+    stats.grossProfit = stats.revenue - stats.totalCOGS;
+    stats.netProfit = stats.grossProfit - stats.totalExpenses;
+
     return stats;
-  }, [filteredOrders, shifts, expenses, startDateFilter, endDateFilter, selectedBranchFilter, selectedCashierFilter]);
+  }, [filteredOrders, shifts, expenses, startDateFilter, endDateFilter, selectedBranchFilter, selectedCashierFilter, products]);
 
   // Leaders rankings parsing
   const bestSellersRankings = useMemo(() => {
@@ -1597,6 +2027,314 @@ export default function BossRicePOS() {
     return Math.max(...bestSellersRankings.map(b => b.qty));
   }, [bestSellersRankings]);
 
+  // --- INVENTORY MANAGEMENT ACTION HANDLERS ---
+  const handleStockIn = () => {
+    if (!newStockItem.trim() || !newStockQty || parseFloat(newStockQty) <= 0) {
+      showNotification('Please fill in Item Name and valid Quantity');
+      return;
+    }
+    const freshTx: InventoryTransaction = {
+      id: 'tx-' + Date.now(),
+      itemName: newStockItem.trim(),
+      qty: parseFloat(newStockQty),
+      variant: newStockVariant.trim() || 'Regular',
+      cost: parseFloat(newStockCost) || 0,
+      type: 'stock-in',
+      status: 'pending-delivery', // tagged from warehouse by admin
+      destinationBranch: newStockDestBranch,
+      deliveryDate: new Date(newStockDeliveryDate).toISOString(),
+      performedBy: currentUser?.username || 'admin'
+    };
+    
+    const updated = [freshTx, ...inventoryTransactions];
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+    
+    setNewStockItem('');
+    setNewStockQty('');
+    setNewStockCost('');
+    setNewStockVariant('Regular');
+    showNotification('Stock tagged from warehouse! Delivery pending cashier arrival confirmation.');
+    if (audioEnabled) playSound('bell');
+  };
+
+  // --- BATCH STOCK DISPATCH DISPATCHERS ---
+  const handleAddBatchItem = () => {
+    if (!batchItemSelect.trim()) {
+      showNotification('Please select a product first');
+      return;
+    }
+    const qVal = parseFloat(batchItemQty);
+    if (isNaN(qVal) || qVal <= 0) {
+      showNotification('Please enter a valid quantity');
+      return;
+    }
+    const cVal = parseFloat(batchItemCost) || 0;
+    
+    // Check if item already exists in the batch to avoid duplicates
+    const duplicateIdx = batchItems.findIndex(
+      b => b.itemName === batchItemSelect && b.variant === batchItemVariant
+    );
+
+    if (duplicateIdx !== -1) {
+      // update quantity of duplicate item
+      const updated = [...batchItems];
+      updated[duplicateIdx].qty += qVal;
+      setBatchItems(updated);
+      showNotification(`Added ${qVal} more units to standard batch item ${batchItemSelect}`);
+    } else {
+      const newItem = {
+        itemName: batchItemSelect.trim(),
+        qty: qVal,
+        variant: batchItemVariant.trim() || 'Regular',
+        cost: cVal
+      };
+      setBatchItems(prev => [...prev, newItem]);
+    }
+
+    setBatchItemQty('');
+    if (audioEnabled) playSound('click');
+  };
+
+  const handleRemoveBatchItem = (index: number) => {
+    setBatchItems(prev => prev.filter((_, idx) => idx !== index));
+    if (audioEnabled) playSound('click');
+  };
+
+  const handleDispatchBatch = () => {
+    if (batchItems.length === 0) {
+      showNotification('Batch tagging list is empty. Add items first!');
+      return;
+    }
+
+    const timestamp = Date.now();
+    const newTxs: InventoryTransaction[] = batchItems.map((item, idx) => ({
+      id: `tx-${timestamp}-${idx}`,
+      itemName: item.itemName,
+      qty: item.qty,
+      variant: item.variant,
+      cost: item.cost,
+      type: 'stock-in',
+      status: 'pending-delivery',
+      destinationBranch: newStockDestBranch,
+      deliveryDate: newStockDeliveryDate ? new Date(newStockDeliveryDate).toISOString() : new Date().toISOString(),
+      performedBy: currentUser?.username || 'admin'
+    }));
+
+    const updated = [...newTxs, ...inventoryTransactions];
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+
+    setBatchItems([]);
+    showNotification(`Success! Dispatched batch of ${newTxs.length} items to ${newStockDestBranch}.`);
+    if (audioEnabled) playSound('bell');
+  };
+
+  const handleReceiveStock = (txId: string) => {
+    const updated = inventoryTransactions.map(tx => {
+      if (tx.id === txId) {
+        return {
+          ...tx,
+          status: 'completed' as const,
+          arrivalDate: new Date().toISOString()
+        };
+      }
+      return tx;
+    });
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+    showNotification('Success! Arrived items tagged as branch store stock.');
+    if (audioEnabled) playSound('success');
+  };
+
+  const startEditingTx = (tx: InventoryTransaction) => {
+    setEditingTxId(tx.id);
+    setEditingTxItemName(tx.itemName);
+    setEditingTxQty(tx.qty.toString());
+    setEditingTxVariant(tx.variant);
+    setEditingTxCost(tx.cost.toString());
+    setEditingTxDestBranch(tx.destinationBranch);
+    setEditingTxStatus(tx.status);
+    setEditingTxDeliveryDate(tx.deliveryDate ? tx.deliveryDate.substring(0, 16) : '');
+  };
+
+  // --- DEVELOPER PANEL ACTION HANDLERS ---
+  const handleSaveSubDates = () => {
+    localStorage.setItem('br_sub_start', subStart);
+    localStorage.setItem('br_sub_end', subEnd);
+    showNotification('🚨 Success: Subscription validity dates saved on local node!');
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleSaveRestrictions = () => {
+    localStorage.setItem('br_sub_max_branches', maxBranches.toString());
+    localStorage.setItem('br_sub_max_devices', maxDevices.toString());
+    showNotification('🚨 Success: License scale restraints saved!');
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleResetDeviceDirectory = () => {
+    const list = [myDeviceId];
+    setRegisteredDevices(list);
+    localStorage.setItem('br_device_list', JSON.stringify(list));
+    setIsDeviceLimitBlocked(false);
+    showNotification('🚨 Success: Browser device registries cleared.');
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleDevNukeDb = () => {
+    localStorage.clear();
+    showNotification('🚨 Purging Database Cache... Reloading POS Console...');
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
+
+  const handleUpdateTx = (txId: string) => {
+    const qtyNum = parseFloat(editingTxQty);
+    if (isNaN(qtyNum) || qtyNum <= 0) {
+      showNotification('Error - Please input a valid greater-than-zero quantity!');
+      return;
+    }
+    const costNum = parseFloat(editingTxCost);
+    if (isNaN(costNum) || costNum < 0) {
+      showNotification('Error - Please input a valid cost!');
+      return;
+    }
+    if (!editingTxDestBranch) {
+      showNotification('Error - Destination branch cannot be empty!');
+      return;
+    }
+
+    const updated = inventoryTransactions.map(tx => {
+      if (tx.id === txId) {
+        return {
+          ...tx,
+          itemName: editingTxItemName,
+          qty: qtyNum,
+          variant: editingTxVariant,
+          cost: costNum,
+          destinationBranch: editingTxDestBranch,
+          status: editingTxStatus,
+          deliveryDate: editingTxDeliveryDate ? new Date(editingTxDeliveryDate).toISOString() : tx.deliveryDate,
+          // Clear arrival date if transitioning back to pending-delivery
+          arrivalDate: editingTxStatus === 'pending-delivery' ? undefined : tx.arrivalDate || new Date().toISOString()
+        };
+      }
+      return tx;
+    });
+
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+    showNotification('Stock dispatch details updated successfully!');
+    setEditingTxId(null);
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleDeleteTx = (txId: string) => {
+    const updated = inventoryTransactions.filter(tx => tx.id !== txId);
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+    showNotification('Stock dispatch cancelled/deleted successfully!');
+    setConfirmingDeleteTxId(null);
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleStockOut = () => {
+    if (!selectedStockOutItemKey.trim() || !stockOutQty || parseFloat(stockOutQty) <= 0) {
+      showNotification('Please select Stock Item and valid Quantity');
+      return;
+    }
+    const matchingProduct = products.find(p => p.name === selectedStockOutItemKey);
+    const costVal = matchingProduct?.cost || 0;
+    const variantVal = matchingProduct?.variant || 'Regular';
+
+    const finalReason = stockOutReason === 'Others' 
+      ? `Others: ${stockOutNote.trim() || 'No custom note provided'}`
+      : stockOutReason;
+
+    const freshTx: InventoryTransaction = {
+      id: 'tx-' + Date.now(),
+      itemName: selectedStockOutItemKey,
+      qty: parseFloat(stockOutQty),
+      variant: variantVal,
+      cost: costVal,
+      type: 'stock-out',
+      status: 'completed',
+      destinationBranch: myActiveShift?.branch || 'Main Branch',
+      deliveryDate: new Date().toISOString(),
+      arrivalDate: new Date().toISOString(),
+      performedBy: currentUser?.username || 'user',
+      reason: finalReason
+    };
+    
+    const updated = [freshTx, ...inventoryTransactions];
+    setInventoryTransactions(updated);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify(updated));
+    
+    setSelectedStockOutItemKey('');
+    setStockOutQty('');
+    setStockOutNote('');
+    showNotification('Stock out entry saved successfully.');
+    if (audioEnabled) playSound('success');
+  };
+
+  const handleClearAllInventoryTransactions = () => {
+    setInventoryTransactions([]);
+    localStorage.setItem('br_inventory_transactions', JSON.stringify([]));
+    showNotification('Success - All inventory transactions have been deleted.');
+    setConfirmingClearTransactions(false);
+    if (audioEnabled) playSound('success');
+  };
+
+  // --- COMPUTE DYNAMIC STOCK LEVEL PER ITEM AND VARIANT ---
+  const stockLevels = useMemo(() => {
+    const levels: { [key: string]: { qty: number; variant: string; cost: number; branch: string } } = {};
+    
+    // Seed with existing catalog products
+    products.forEach(p => {
+      const key = `${p.name}::${p.variant || 'Regular'}`;
+      levels[key] = {
+        qty: 0,
+        variant: p.variant || 'Regular',
+        cost: p.cost || 0,
+        branch: 'Main Branch'
+      };
+    });
+
+    // Run active completed stock transactions list
+    inventoryTransactions.forEach(tx => {
+      if (tx.status !== 'completed') return; // Skip pending deliveries from warehouse
+      
+      const key = `${tx.itemName}::${tx.variant}`;
+      if (!levels[key]) {
+        levels[key] = {
+          qty: 0,
+          variant: tx.variant,
+          cost: tx.cost,
+          branch: tx.destinationBranch || 'Main Branch'
+        };
+      }
+      
+      if (tx.type === 'stock-in') {
+        levels[key].qty += tx.qty;
+      } else if (tx.type === 'stock-out') {
+        levels[key].qty = Math.max(0, levels[key].qty - tx.qty);
+      }
+    });
+
+    return Object.entries(levels).map(([nVariant, info]) => {
+      const [itemName] = nVariant.split('::');
+      return {
+        itemName,
+        qty: info.qty,
+        variant: info.variant,
+        cost: info.cost,
+        branch: info.branch
+      };
+    });
+  }, [inventoryTransactions, products]);
+
   // --- COMPUTE CHANGE CASH ---
   const enteredReceivedValue = parseFloat(cashReceivedText || '0');
   const computedChangeDue = enteredReceivedValue - cartTotalAmount;
@@ -1605,6 +2343,51 @@ export default function BossRicePOS() {
   return (
     <div className="flex flex-col min-h-screen text-zinc-100 bg-zinc-950 font-sans selection:bg-red-600/30">
       
+      {/* ─── LICENSE AND SUBSCRIPTION LOCK SCREENS ─── */}
+      {!isDeveloperMode && isDeviceLimitBlocked && (
+        <div className="fixed inset-0 bg-zinc-950 z-50 flex flex-col items-center justify-center p-6 text-center select-none bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-indigo-950/20 via-zinc-950 to-zinc-950">
+          <div className="w-16 h-16 bg-red-600/10 border border-red-500/40 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-red-500/5 text-red-500">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight max-w-md">
+            🚫 Device License Limit Exceeded
+          </h2>
+          <p className="text-sm text-zinc-400 mt-3 max-w-md leading-relaxed">
+            This registration station has exceeded the maximum devices permitted under your SaaS subscription license.
+          </p>
+          <div className="mt-8 p-4 bg-zinc-900 border border-zinc-850 rounded-2xl font-mono text-xs text-zinc-500 text-left w-full max-w-xs space-y-1">
+            <div>• Registered Devices Count Limit: {maxDevices} max</div>
+            <div>• Current Terminal UUID: {myDeviceId}</div>
+            <div>• Status: Terminated/Suspended</div>
+          </div>
+          <p className="text-[10px] text-zinc-650 mt-6 uppercase tracking-widest font-display">
+            Please contact the system developer to upgrade this license.
+          </p>
+        </div>
+      )}
+
+      {!isDeveloperMode && !isSubscriptionValid && (
+        <div className="fixed inset-0 bg-zinc-950 z-50 flex flex-col items-center justify-center p-6 text-center select-none bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-amber-950/20 via-zinc-950 to-zinc-950">
+          <div className="w-16 h-16 bg-amber-600/10 border border-amber-500/40 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-amber-500/5 text-amber-500">
+            <AlertTriangle className="w-8 h-8 animate-pulse" />
+          </div>
+          <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight max-w-md">
+            ⚠️ Subscription Term Limit Suspended
+          </h2>
+          <p className="text-sm text-zinc-400 mt-3 max-w-md leading-relaxed">
+            Your application&apos;s paid subscription license elapsed on <strong className="text-amber-500">{subEnd}</strong>. Software access is suspended until renewal.
+          </p>
+          <div className="mt-8 p-4 bg-zinc-900 border border-zinc-850 rounded-2xl font-mono text-xs text-zinc-500 text-left w-full max-w-xs space-y-1">
+            <div>• Subscription Range: {subStart} to {subEnd}</div>
+            <div>• Current Station UTC Time: {currentTime}</div>
+            <div>• Status: Sub-Expired Locked</div>
+          </div>
+          <p className="text-[10px] text-zinc-650 mt-6 uppercase tracking-widest font-display">
+            Please contact the system developer to renew SaaS terminal access.
+          </p>
+        </div>
+      )}
+
       {/* ─── TOAST NOTIFICATION ─── */}
       <AnimatePresence>
         {toastMessage && (
@@ -1907,6 +2690,16 @@ export default function BossRicePOS() {
                       <UserPlus className="w-3 md:w-3.5 h-3 md:h-3.5 text-emerald-500" /> Staff
                     </button>
                     <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'inventory' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Stock & Delivery
+                    </button>
+                    <button 
                       onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
                       className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'expenses' 
@@ -1916,6 +2709,18 @@ export default function BossRicePOS() {
                     >
                       <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-red-500" /> Expenses
                     </button>
+                    {isDeveloperMode && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('developer'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition border flex items-center gap-1.5 whitespace-nowrap bg-indigo-950/40 text-indigo-400 border-indigo-900/40 hover:text-indigo-200 ${
+                          activeTab === 'developer' 
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-600/20' 
+                            : ''
+                        }`}
+                      >
+                        <Lock className="w-3 md:w-3.5 h-3 md:h-3.5 text-indigo-400 shrink-0" /> Dev Panel Mode
+                      </button>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1928,6 +2733,16 @@ export default function BossRicePOS() {
                       }`}
                     >
                       <Briefcase className="w-3 md:w-3.5 h-3 md:h-3.5" /> My Shift
+                    </button>
+                    <button 
+                      onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
+                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                        activeTab === 'inventory' 
+                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Store Stock
                     </button>
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
@@ -2102,7 +2917,7 @@ export default function BossRicePOS() {
                     </header>
 
                     {/* Analytics grids */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                       
                       <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
                         <div>
@@ -2110,6 +2925,30 @@ export default function BossRicePOS() {
                           <div className="text-xl font-mono font-bold text-amber-500">₱{analyticsData.revenue.toLocaleString()}</div>
                         </div>
                         <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Core Sales sum</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📦 Total COGS</span>
+                          <div className="text-xl font-mono font-bold text-rose-500">₱{analyticsData.totalCOGS.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Cost of sold dishes</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-emerald-950/45 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-emerald-400 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">📈 Sales Profit</span>
+                          <div className="text-xl font-mono font-bold text-emerald-400">₱{analyticsData.grossProfit.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Revenue minus COGS</p>
+                      </article>
+
+                      <article className="bg-zinc-900 border border-emerald-950/40 p-4 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-emerald-450 text-[9px] uppercase font-display font-bold tracking-widest block mb-1 text-emerald-450">💎 Net Profit</span>
+                          <div className="text-xl font-mono font-bold text-glow text-emerald-400">₱{analyticsData.netProfit.toLocaleString()}</div>
+                        </div>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Profit minus expenses</p>
                       </article>
 
                       <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
@@ -2136,10 +2975,10 @@ export default function BossRicePOS() {
                         <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">{analyticsData.gcashCount} QR scans</p>
                       </article>
 
-                      <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
+                      <article className="bg-zinc-900 border border-zinc-805/85 border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
                         <div>
                           <span className="text-zinc-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💸 Exp. Outflow</span>
-                          <div className="text-xl font-mono font-bold text-rose-500 font-semibold">₱{analyticsData.totalExpenses.toLocaleString()}</div>
+                          <div className="text-xl font-mono font-bold text-rose-450 text-rose-400">₱{analyticsData.totalExpenses.toLocaleString()}</div>
                         </div>
                         <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Logged expenses</p>
                       </article>
@@ -2149,15 +2988,7 @@ export default function BossRicePOS() {
                           <span className="text-amber-500 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">🏦 Drawer Cash</span>
                           <div className="text-xl font-mono font-bold text-amber-500">₱{analyticsData.expectedRegisterCash.toLocaleString()}</div>
                         </div>
-                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Expected cash in drawer</p>
-                      </article>
-
-                      <article className="bg-zinc-900 border border-emerald-950/40 p-4 rounded-2xl flex flex-col justify-between">
-                        <div>
-                          <span className="text-emerald-400 text-[9px] uppercase font-display font-bold tracking-widest block mb-1">💎 Net Revenue</span>
-                          <div className="text-xl font-mono font-bold text-emerald-400 text-glow">₱{analyticsData.netRevenue.toLocaleString()}</div>
-                        </div>
-                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Gross minus expenses</p>
+                        <p className="text-[9px] text-zinc-500 font-display mt-2 uppercase">Expected register</p>
                       </article>
 
                       <article className="bg-zinc-900 border border-zinc-800/80 p-4 rounded-2xl flex flex-col justify-between">
@@ -2739,24 +3570,45 @@ export default function BossRicePOS() {
                       ) : (
                         <div className="flex flex-col gap-3">
                           {shifts.map((sh, idx) => {
-                            const dateStr = new Date(sh.login_time).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+                            const loginStr = new Date(sh.login_time).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+                            const logoutStr = sh.logout_time 
+                              ? new Date(sh.logout_time).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) 
+                              : null;
                             return (
-                              <div key={idx} className="bg-zinc-950 border border-zinc-850 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                              <div key={idx} className="bg-zinc-950 border border-zinc-850 p-4 rounded-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                                 <div>
-                                  <div className="flex items-center gap-2 mb-1.5">
+                                  <div className="flex items-center gap-2 mb-2">
                                     <span className="text-xs font-bold text-white uppercase tracking-wider">👤 {sh.cashier_name}</span>
                                     <span className="text-[9px] font-mono tracking-widest bg-red-950/40 text-red-400 border border-red-900/40 px-2 rounded-full uppercase">{sh.branch}</span>
+                                    {sh.logout_time ? (
+                                      <span className="text-[8px] font-mono tracking-wider bg-zinc-900 text-zinc-400 border border-zinc-805 px-1.5 py-0.5 rounded uppercase">Logged Out</span>
+                                    ) : (
+                                      <span className="text-[8px] font-mono tracking-wider bg-emerald-950/40 text-emerald-400 border border-emerald-900/40 px-1.5 py-0.5 rounded uppercase font-bold animate-pulse">● Active Session</span>
+                                    )}
                                   </div>
-                                  <p className="text-[10px] text-zinc-500 font-display font-light">Shift session active since {dateStr}</p>
+                                  <div className="flex flex-col gap-1 font-mono text-[10px] text-zinc-400">
+                                    <div>
+                                      <span className="text-zinc-500 uppercase tracking-wide mr-1 font-semibold font-display">🕒 Logged In:</span>
+                                      <span className="text-zinc-300 font-semibold">{loginStr}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-zinc-500 uppercase tracking-wide mr-1 font-semibold font-display">🚪 Logged Out:</span>
+                                      {logoutStr ? (
+                                        <span className="text-zinc-300 font-semibold">{logoutStr}</span>
+                                      ) : (
+                                        <span className="text-emerald-400 font-bold uppercase tracking-wider">Still Logged In / Terminal Active</span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4 text-right flex-none">
                                   <div>
-                                    <span className="text-[9px] text-zinc-500 block uppercase font-bold">Beginning Balance</span>
-                                    <span className="text-xs font-mono font-bold text-zinc-300">₱{sh.beginning_balance}</span>
+                                    <span className="text-[9px] text-zinc-500 block uppercase font-bold font-display">Beginning Bal</span>
+                                    <span className="text-xs font-mono font-bold text-zinc-300">₱{sh.beginning_balance.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                   </div>
                                   <div>
                                     <span className="text-[9px] text-amber-500 block uppercase font-bold font-mono">Shift Sales</span>
-                                    <span className="text-xs font-mono font-bold text-amber-500">₱{sh.total_sales || 0}</span>
+                                    <span className="text-xs font-mono font-bold text-amber-500">₱{(sh.total_sales || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                   </div>
                                 </div>
                               </div>
@@ -2807,7 +3659,7 @@ export default function BossRicePOS() {
                               placeholder="e.g. 5678" 
                               value={newStaffPassword}
                               onChange={(e) => setNewStaffPassword(e.target.value)}
-                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-550 transition"
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-555 transition"
                             />
                           </div>
 
@@ -2824,6 +3676,19 @@ export default function BossRicePOS() {
                           </div>
                         </div>
 
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Assigned Branch</label>
+                          <select
+                            value={newStaffBranch}
+                            onChange={(e) => { handleTactileClick(); setNewStaffBranch(e.target.value); }}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none cursor-pointer"
+                          >
+                            {branches.map(b => (
+                              <option key={b} value={b}>{b}</option>
+                            ))}
+                          </select>
+                        </div>
+
                         <button 
                           onClick={handleAddStaffUser}
                           className="mt-2 w-full bg-red-650 hover:bg-red-700 text-xs font-display font-bold text-white p-3 rounded-xl transition uppercase tracking-wider shadow-lg shadow-red-600/10 active:scale-95 cursor-pointer"
@@ -2835,14 +3700,25 @@ export default function BossRicePOS() {
                       {/* PASSWORD PIN CHANGER */}
                       <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
                         <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-1">
-                          UPDATE STAFF PIN PASSWORD
+                          UPDATE STAFF PIN & BRANCH
                         </h4>
 
                         <div className="flex flex-col gap-1.5">
                           <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Select Account Profile</label>
                           <select
                             value={passwordChangeUser}
-                            onChange={(e) => setPasswordChangeUser(e.target.value)}
+                            onChange={(e) => {
+                              const username = e.target.value;
+                              setPasswordChangeUser(username);
+                              const found = users.find(u => u.username === username);
+                              if (found) {
+                                setPasswordChangeNew(found.password || '');
+                                setPasswordChangeBranch(found.branch || 'Main Branch');
+                              } else {
+                                setPasswordChangeNew('');
+                                setPasswordChangeBranch('Main Branch');
+                              }
+                            }}
                             className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none cursor-pointer"
                           >
                             <option value="">-- Choose Profile --</option>
@@ -2855,7 +3731,7 @@ export default function BossRicePOS() {
                         </div>
 
                         <div className="flex flex-col gap-1.5">
-                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Fresh New PIN Code</label>
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">PIN Code</label>
                           <input 
                             type="text" 
                             placeholder="e.g. 4321" 
@@ -2865,12 +3741,103 @@ export default function BossRicePOS() {
                           />
                         </div>
 
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Update Assigned Branch</label>
+                          <select
+                            value={passwordChangeBranch}
+                            onChange={(e) => { handleTactileClick(); setPasswordChangeBranch(e.target.value); }}
+                            className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none cursor-pointer"
+                          >
+                            {branches.map(b => (
+                              <option key={b} value={b}>{b}</option>
+                            ))}
+                          </select>
+                        </div>
+
                         <button 
                           onClick={handleChangeStaffPassword}
                           className="mt-2 w-full bg-amber-500 hover:bg-amber-600 text-xs font-display font-bold text-white p-3 rounded-xl transition uppercase tracking-wider shadow-lg shadow-amber-500/10 active:scale-95 cursor-pointer"
                         >
-                          🔐 Change PIN Code Password
+                          🔐 Update Access Profile Settings
                         </button>
+                      </div>
+
+                      {/* BRANCH MANAGEMENT CARD */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <h4 className="text-xs font-display font-extrabold uppercase tracking-widest text-red-500 border-b border-zinc-850 pb-2 mb-1">
+                          🏢 ACTIVE BRANCH STATIONS REGISTRY
+                        </h4>
+                        <p className="text-[11px] text-zinc-500 uppercase tracking-wide">
+                          Dynamically add or retire company branches. These populate shift setups & staff credentials config.
+                        </p>
+
+                        <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="e.g. Mambaling Outpost" 
+                            value={newBranchName}
+                            onChange={(e) => setNewBranchName(e.target.value)}
+                            className="flex-1 bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-display text-zinc-200 placeholder-zinc-700 outline-none focus:border-red-500 transition"
+                          />
+                          <button
+                            onClick={() => { handleTactileClick(); handleCreateBranch(); }}
+                            className="bg-red-650 hover:bg-red-700 text-[10px] font-display font-bold text-white px-4 rounded-xl transition uppercase tracking-wider cursor-pointer"
+                          >
+                            ➕ Add
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5 mt-2">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-550 font-semibold mb-1">Configured Outlet Branches ({branches.length})</label>
+                          <div className="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto pr-1">
+                            {branches.map(b => (
+                              <div key={b} className="flex items-center justify-between bg-zinc-950 border border-zinc-850 px-3 py-2 rounded-xl">
+                                <span className="text-xs text-zinc-300 font-display font-medium">🏢 {b}</span>
+                                {b !== 'Main Branch' ? (
+                                  <div className="flex items-center gap-1.5">
+                                    {confirmingDeleteBranch === b ? (
+                                      <>
+                                        <button
+                                          onClick={() => {
+                                            handleTactileClick();
+                                            handleDeleteBranch(b);
+                                          }}
+                                          className="p-1 px-2 text-[8px] font-display font-bold uppercase tracking-wider text-white bg-red-650 hover:bg-red-700 rounded-lg transition-all cursor-pointer"
+                                        >
+                                          Confirm Delete?
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            handleTactileClick();
+                                            setConfirmingDeleteBranch(null);
+                                          }}
+                                          className="p-1 px-2 text-[8px] font-display font-semibold uppercase tracking-wider text-zinc-400 hover:text-white bg-zinc-800 rounded-lg transition-all cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        onClick={() => {
+                                          handleTactileClick();
+                                          setConfirmingDeleteBranch(b);
+                                        }}
+                                        className="p-1 px-2.5 text-[9px] font-display font-bold uppercase tracking-wider text-red-500 hover:text-white border border-red-955 hover:bg-red-950/40 rounded-lg transition-all cursor-pointer"
+                                        title="Retire/Delete Branch Outlet"
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-[9px] font-mono tracking-widest text-zinc-650 bg-zinc-900 border border-zinc-850 px-1.5 py-0.5 rounded">
+                                    CORE SYSTEM
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
 
                       {/* CURRENT REGISTERED STAFF SUMMARY PANEL */}
@@ -2886,7 +3853,12 @@ export default function BossRicePOS() {
                                 <span className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-xs">👤</span>
                                 <div>
                                   <span className="text-xs font-bold text-white block uppercase tracking-wide">{item.username}</span>
-                                  <span className="text-[9px] uppercase font-mono tracking-widest text-zinc-550 block mt-0.5">{item.role}</span>
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    <span className="text-[9px] uppercase font-mono tracking-widest text-zinc-550">{item.role}</span>
+                                    <span className="text-[8px] uppercase tracking-wide font-mono bg-red-950/25 text-red-400 border border-red-900/40 px-1 rounded-sm">
+                                      🏢 {item.branch || 'Main Branch'}
+                                    </span>
+                                  </div>
                                 </div>
                               </div>
                               <span className="font-mono text-xs text-amber-500 bg-amber-950/20 px-2 py-0.5 border border-amber-900/30 rounded">PIN: {item.password}</span>
@@ -2984,6 +3956,863 @@ export default function BossRicePOS() {
                             })}
                           </div>
                         )}
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+
+                {/* GLOBAL DEVELOPER CORE CONTROLS */}
+                {activeTab === 'developer' && isDeveloperMode && (
+                  <div className="flex flex-col gap-6 animate-fade-in text-zinc-100">
+                    <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-5">
+                      <div>
+                        <h2 className="text-2xl font-display font-black uppercase text-indigo-400 tracking-tight flex items-center gap-2">
+                          ⚙️ Developer <span className="text-white">Core Control</span> Center
+                        </h2>
+                        <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider font-semibold">
+                          Licensing, Scale Limits, Device Authentication and System Seeding Diagnostics Suite
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-mono tracking-widest bg-indigo-950/40 text-indigo-400 border border-indigo-900/40 px-3 py-1.5 rounded-full uppercase font-bold animate-pulse">
+                        ● Host Agent Secure Connected
+                      </span>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      
+                      {/* CARD 1: SaaS SUBSCRIPTION ACTIVATION RANGE */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Calendar className="w-4 h-4 text-indigo-400" /> SaaS Premium Subscription Dates
+                          </h3>
+                          {isSubscriptionValid ? (
+                            <span className="text-[9px] font-mono tracking-wide bg-emerald-950/40 text-emerald-400 border border-emerald-900/40 px-2.5 py-0.5 rounded uppercase font-bold">
+                              Paid License: Active
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-mono tracking-wide bg-red-950/40 text-red-500 border border-red-900/40 px-2.5 py-0.5 rounded uppercase font-bold animate-pulse">
+                              Subscription Expired / Suspended
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Configure the exact date bracket during which the client’s software is considered paid and operating under a legitimate license. Outside this bracket, the app will suspend operations gracefully.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Active Since (From)</label>
+                            <input 
+                              type="date" 
+                              value={subStart}
+                              onChange={(e) => setSubStart(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800 cursor-pointer"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Active Thru (To)</label>
+                            <input 
+                              type="date" 
+                              value={subEnd}
+                              onChange={(e) => setSubEnd(e.target.value)}
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800 cursor-pointer"
+                            />
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={handleSaveSubDates}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-xs font-display font-medium text-white p-3 rounded-xl transition uppercase tracking-wider font-bold shadow-lg shadow-indigo-600/10 cursor-pointer"
+                        >
+                          💾 Save Subscription Range Dates
+                        </button>
+                      </div>
+
+                      {/* CARD 2: SCALE CONSTRAINT CONTROL */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Grid className="w-4 h-4 text-indigo-400" /> License Scale Limits & Restrictions
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Limit how many branch outlets the subscriber is allowed to establish and how many devices/browsers can run the register software simultaneously under this tier.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Max Branches Allowed</label>
+                            <input 
+                              type="number" 
+                              value={maxBranches}
+                              onChange={(e) => setMaxBranches(parseInt(e.target.value) || 1)}
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Max Devices Allowed</label>
+                            <input 
+                              type="number" 
+                              value={maxDevices}
+                              onChange={(e) => setMaxDevices(parseInt(e.target.value) || 1)}
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800"
+                            />
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={handleSaveRestrictions}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-xs font-display font-medium text-white p-3 rounded-xl transition uppercase tracking-wider font-bold shadow-lg shadow-indigo-600/10 cursor-pointer"
+                        >
+                          💾 Save Restrictions Config
+                        </button>
+                      </div>
+
+                      {/* CARD 3: DEVICE DIRECTORY LISTENING */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Smartphone className="w-4 h-4 text-indigo-400" /> Terminal Registry Directory ({registeredDevices.length} / {maxDevices})
+                          </h3>
+                        </div>
+
+                        <div className="p-3.5 bg-zinc-950 rounded-xl border border-zinc-850 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <div>
+                            <span className="text-[8px] font-mono tracking-wider bg-indigo-950/40 text-indigo-400 border border-indigo-900/40 px-2 py-0.5 rounded uppercase font-sans font-bold mr-1.5">CURRENT REGISTER ID</span>
+                            <span className="font-mono text-xs font-bold text-zinc-300">{myDeviceId}</span>
+                          </div>
+                          <span className="text-[10px] text-indigo-400 font-display font-semibold animate-pulse uppercase tracking-wider shrink-0 flex items-center gap-1">● Console Connected</span>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-display uppercase tracking-wider text-zinc-550 font-semibold">Devices Database Registry Table</label>
+                          <div className="max-h-28 overflow-y-auto bg-zinc-950 border border-zinc-850 rounded-xl divide-y divide-zinc-850 flex flex-col">
+                            {registeredDevices.length === 0 ? (
+                              <p className="text-xs text-zinc-550 p-3 text-center font-display">No authorized registers saved.</p>
+                            ) : (
+                              registeredDevices.map((dev, idx) => (
+                                <div key={idx} className="p-2.5 flex items-center justify-between font-mono text-[10px]">
+                                  <span className="text-zinc-300">📱 STATION-{idx+1}: {dev}</span>
+                                  {dev === myDeviceId ? (
+                                    <span className="text-[8px] text-indigo-400 bg-indigo-950/40 border border-indigo-900/40 px-1.5 py-0.5 rounded uppercase font-sans font-semibold">Selected Station</span>
+                                  ) : (
+                                    <span className="text-[8px] text-zinc-500 uppercase font-sans">Remote Terminal Node</span>
+                                  )}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={handleResetDeviceDirectory}
+                          className="w-full bg-red-950/15 hover:bg-red-900/15 text-xs font-display font-bold text-red-400 p-2.5 rounded-xl border border-red-900/30 transition uppercase tracking-wider font-bold cursor-pointer"
+                        >
+                          🔄 Purge Register Devices Registry
+                        </button>
+                      </div>
+
+                      {/* CARD 4: CORE DIAGNOSTICS & SYSTEM RESET */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Database className="w-4 h-4 text-indigo-400" /> Diagnostics & Core Recovery Tools
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-505 leading-relaxed font-display uppercase tracking-wide text-zinc-500">
+                          Use these options to simulate a complete offline local storage recovery or to seed clean datasets for demo scenarios. Be extremely careful; this wipes existing sales cache completely.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <button 
+                            onClick={() => {
+                              // Seeding sample transaction historical dataset
+                              const sampleTxs: InventoryTransaction[] = [
+                                {
+                                  id: 'tx-sample1',
+                                  itemName: 'Wagyu Beef Overload Rice',
+                                  qty: 15,
+                                  variant: 'Regular Pack',
+                                  cost: 1500,
+                                  type: 'stock-in',
+                                  status: 'completed',
+                                  destinationBranch: 'Main Branch',
+                                  deliveryDate: new Date().toISOString(),
+                                  arrivalDate: new Date().toISOString(),
+                                  performedBy: 'SysDev'
+                                },
+                                {
+                                  id: 'tx-sample2',
+                                  itemName: 'Original Sisig Rice Meal',
+                                  qty: 40,
+                                  variant: 'Box Pack',
+                                  cost: 2400,
+                                  type: 'stock-out',
+                                  status: 'completed',
+                                  destinationBranch: 'Main Branch',
+                                  deliveryDate: new Date().toISOString(),
+                                  arrivalDate: new Date().toISOString(),
+                                  performedBy: 'SysDev',
+                                  reason: 'Ingredient Spoiled / Damaged'
+                                }
+                              ];
+                              setInventoryTransactions(sampleTxs);
+                              localStorage.setItem('br_inventory_transactions', JSON.stringify(sampleTxs));
+                              showNotification('Success: Seeded demo stock-in and stock-out logs!');
+                              if (audioEnabled) playSound('success');
+                            }}
+                            className="bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 text-[10px] font-display font-extrabold uppercase py-3 rounded-xl text-zinc-300 tracking-wider cursor-pointer transition active:scale-95 text-center"
+                          >
+                            ⭐ Seed Inventory Demo
+                          </button>
+                          
+                          <button 
+                            onClick={handleDevNukeDb}
+                            className="bg-red-950/40 hover:bg-red-900/30 border border-red-900/30 text-[10px] font-display font-extrabold uppercase py-3 rounded-xl text-red-400 tracking-wider cursor-pointer transition active:scale-95 text-center"
+                          >
+                            💀 WIPE POS LOCALSTORAGE
+                          </button>
+                        </div>
+
+                        <div className="flex-1 bg-zinc-950 border border-zinc-850 p-3 rounded-xl flex flex-col font-mono text-[9px] text-zinc-550 overflow-y-auto max-h-24 divide-y divide-zinc-900 gap-1 select-all">
+                          <div className="pb-1">[DIAG]: Connected source terminal agent active.</div>
+                          <div className="py-1">[DIAG]: Active Subscription validity: {subStart} to {subEnd}</div>
+                          <div className="py-1">[DIAG]: Config constraints: max {maxBranches} branches, max {maxDevices} devices</div>
+                          <div className="pt-1">[DIAG]: Terminal license key verification: OK.</div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+
+                {/* INVENTORY SYSTEM PANEL */}
+                {activeTab === 'inventory' && (
+                  <div className="flex flex-col gap-6 animate-fade-in">
+                    <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">
+                          Inventory <span className="text-red-500">System</span> Control
+                        </h2>
+                        <p className="text-xs text-zinc-500 mt-1 uppercase tracking-wider">
+                          Admin logs warehouse deliveries & cashiers confirm arrival to tag branch stock
+                        </p>
+                      </div>
+
+                      {/* Search and filter controls */}
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-3" />
+                          <input 
+                            type="text" 
+                            placeholder="Search stock..." 
+                            value={inventorySearchQuery}
+                            onChange={(e) => setInventorySearchQuery(e.target.value)}
+                            className="bg-zinc-950 border border-zinc-800 rounded-xl py-2 pl-9 pr-4 text-xs text-zinc-200 placeholder-zinc-650 outline-none focus:border-red-500 transition"
+                          />
+                        </div>
+
+                        <select
+                          value={inventoryBranchFilter}
+                          onChange={(e) => setInventoryBranchFilter(e.target.value)}
+                          className="bg-zinc-950 border border-zinc-800 rounded-xl p-2 text-xs text-zinc-300 outline-none focus:border-red-500 cursor-pointer"
+                        >
+                          <option value="All">All Branches</option>
+                          {branches.map(b => (
+                            <option key={b} value={b}>{b}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </header>
+
+                    {/* SUB-TABS SELECTOR FOR INVENTORY */}
+                    <div className="flex border-b border-zinc-850 gap-2 pb-px select-none">
+                      {/* Received tab (Visible to both Cashier & Admin) */}
+                      <button
+                        onClick={() => { handleTactileClick(); setActiveInventoryTab('received'); }}
+                        className={`px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+                          activeInventoryTab === 'received' 
+                            ? 'border-red-600 text-white' 
+                            : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                        }`}
+                      >
+                        🚚 Received & Pending Stock ({inventoryTransactions.filter(tx => tx.type === 'stock-in').length})
+                      </button>
+
+                      {/* Stock-In tab (Admin ONLY) */}
+                      {currentRole === 'admin' && (
+                        <button
+                          onClick={() => { handleTactileClick(); setActiveInventoryTab('stock-in'); }}
+                          className={`px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+                            activeInventoryTab === 'stock-in' 
+                              ? 'border-red-600 text-white' 
+                              : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                          }`}
+                        >
+                          📥 Tag Warehouse Stock (Admin Only)
+                        </button>
+                      )}
+
+                      {/* Stock-Out tab (Both Role - as cashier only has a stock out tab in inventory menu) */}
+                      <button
+                        onClick={() => { handleTactileClick(); setActiveInventoryTab('stock-out'); }}
+                        className={`px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+                          activeInventoryTab === 'stock-out' 
+                            ? 'border-red-600 text-white' 
+                            : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                        }`}
+                      >
+                        📤 Stock Out Outflow Register
+                      </button>
+                    </div>
+
+                    {/* MAIN INVENTORY SUB-VIEWS DISPLAY */}
+                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+                      
+                      {/* COLUMN 1 & 2: TABLES / TRANS LOGS */}
+                      <div className="xl:col-span-2 flex flex-col gap-6">
+                        
+                        {/* A. ACTIVE INVENTORY BALANCE SUMMARY CARD */}
+                        <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl">
+                          <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-amber-500 border-b border-zinc-850 pb-3 mb-4 flex justify-between items-center font-bold">
+                            <span>📦 Active Branch Store Stock Summary</span>
+                            <span className="text-[10px] font-mono text-zinc-500 uppercase">Items With stock markers</span>
+                          </h4>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs text-zinc-400 select-none">
+                              <thead>
+                                <tr className="border-b border-zinc-850 text-zinc-500 text-[10px] uppercase font-display font-bold tracking-wider">
+                                  <th className="pb-3 pl-2">Stock Item Name</th>
+                                  <th className="pb-3">Type Variant</th>
+                                  <th className="pb-3 text-center">In-Store Stock Level</th>
+                                  <th className="pb-3 text-right">Unit cost</th>
+                                  <th className="pb-3 text-right pr-2">Total Value (PHP)</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {stockLevels
+                                  .filter(lvl => {
+                                    if (inventorySearchQuery) {
+                                      const sMatch = lvl.itemName.toLowerCase().includes(inventorySearchQuery.toLowerCase()) || 
+                                                     lvl.variant.toLowerCase().includes(inventorySearchQuery.toLowerCase());
+                                      if (!sMatch) return false;
+                                    }
+                                    if (inventoryBranchFilter !== 'All') {
+                                      if (lvl.branch !== inventoryBranchFilter) return false;
+                                    }
+                                    return true;
+                                  })
+                                  .map((lvl, index) => {
+                                    const totalStockValue = lvl.qty * lvl.cost;
+                                    return (
+                                      <tr key={index} className="border-b border-zinc-850/60 hover:bg-zinc-950/30 transition-all font-display">
+                                        <td className="py-3 pl-2 text-zinc-200 font-bold">{lvl.itemName}</td>
+                                        <td className="py-3 font-mono text-zinc-500">{lvl.variant}</td>
+                                        <td className="py-3 text-center">
+                                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono ${
+                                            lvl.qty === 0 
+                                              ? 'bg-zinc-950 border border-zinc-850/50 text-zinc-650' 
+                                              : lvl.qty <= 5 
+                                              ? 'bg-amber-950/20 text-amber-500 border border-amber-900/30' 
+                                              : 'bg-emerald-950/20 text-emerald-400 border border-emerald-900/30'
+                                          }`}>
+                                            {lvl.qty} pcs / bags
+                                          </span>
+                                        </td>
+                                        <td className="py-3 text-right font-mono text-zinc-450">₱{lvl.cost.toLocaleString()}</td>
+                                        <td className="py-3 text-right font-mono font-bold text-amber-500 pr-2">₱{totalStockValue.toLocaleString()}</td>
+                                      </tr>
+                                    );
+                                  })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* B. TRANSACTION HISTORY LOGS PANEL */}
+                        <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl">
+                          <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-zinc-400 border-b border-zinc-850 pb-3 mb-4 flex justify-between items-center font-bold">
+                            <span>📋 Raw Logged Delivery & Disposal Ledger</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-mono text-zinc-500 mr-2">Total Logged: {inventoryTransactions.length} items</span>
+                              {inventoryTransactions.length > 0 && (
+                                <div className="flex items-center gap-1.5">
+                                  {confirmingClearTransactions ? (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          handleTactileClick();
+                                          handleClearAllInventoryTransactions();
+                                        }}
+                                        className="px-2 py-1 text-[8px] font-display font-bold uppercase tracking-wider text-white bg-red-650 hover:bg-red-700 rounded-lg transition-all cursor-pointer"
+                                      >
+                                        Yes, Clear Logs
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          handleTactileClick();
+                                          setConfirmingClearTransactions(false);
+                                        }}
+                                        className="px-2 py-1 text-[8px] font-display font-semibold uppercase tracking-wider text-zinc-400 hover:text-white bg-zinc-800 rounded-lg transition-all cursor-pointer"
+                                      >
+                                        No
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      onClick={() => {
+                                        handleTactileClick();
+                                        setConfirmingClearTransactions(true);
+                                      }}
+                                      className="px-2.5 py-1 text-[9px] font-display font-bold uppercase tracking-wider text-red-500 border border-red-950 hover:bg-red-950/20 rounded-lg transition-all cursor-pointer"
+                                    >
+                                      Delete All
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </h4>
+
+                          <div className="flex flex-col gap-2 max-h-96 overflow-y-auto pr-1">
+                            {inventoryTransactions
+                              .filter(tx => {
+                                if (inventorySearchQuery) {
+                                  return tx.itemName.toLowerCase().includes(inventorySearchQuery.toLowerCase());
+                                }
+                                if (inventoryBranchFilter !== 'All') {
+                                  return tx.destinationBranch === inventoryBranchFilter;
+                                }
+                                return true;
+                              })
+                              .map((tx) => {
+                                const formattedDeliveryDate = new Date(tx.deliveryDate).toLocaleString('en-PH', { dateStyle: 'short', timeStyle: 'short' });
+                                const isPending = tx.status === 'pending-delivery';
+                                const parsedMyBranch = myActiveShift?.branch || 'Main Branch';
+                                // Cashier should capture delivery to their branch
+                                const belongsToCashierBranch = tx.destinationBranch.toLowerCase() === parsedMyBranch.toLowerCase();
+
+                                if (editingTxId === tx.id) {
+                                  return (
+                                    <article key={tx.id} className="bg-zinc-900 border-2 border-amber-500 p-4 rounded-xl flex flex-col gap-3 font-display">
+                                      <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                                        <span className="text-xs font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1">📝 Edit Dispatch/Transaction</span>
+                                        <span className="text-[9px] font-mono text-zinc-500">ID: {tx.id.substring(0, 8)}...</span>
+                                      </div>
+                                      
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        {/* Item Name */}
+                                        <div className="flex flex-col gap-1">
+                                          <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Item Name</label>
+                                          <select 
+                                            value={editingTxItemName}
+                                            onChange={(e) => {
+                                              setEditingTxItemName(e.target.value);
+                                              const prod = products.find(p => p.name === e.target.value);
+                                              if (prod) {
+                                                setEditingTxVariant(prod.variant || 'Regular');
+                                                setEditingTxCost(prod.cost?.toString() || '0');
+                                              }
+                                            }}
+                                            className="bg-zinc-950 border border-zinc-800 text-xs text-white p-2.5 rounded-lg outline-none cursor-pointer"
+                                          >
+                                            {products.map(p => (
+                                              <option key={p.id} value={p.name}>{p.name}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+
+                                        {/* Destination Branch */}
+                                        <div className="flex flex-col gap-1">
+                                          <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Target Tagged Branch</label>
+                                          <select 
+                                            value={editingTxDestBranch}
+                                            onChange={(e) => setEditingTxDestBranch(e.target.value)}
+                                            className="bg-zinc-950 border border-zinc-800 text-xs text-white p-2.5 rounded-lg outline-none cursor-pointer"
+                                          >
+                                            {branches.map(b => (
+                                              <option key={b} value={b}>{b}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+
+                                        {/* Qty & Specifier */}
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div className="flex flex-col gap-1">
+                                            <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Qty</label>
+                                            <input 
+                                              type="number"
+                                              value={editingTxQty}
+                                              onChange={(e) => setEditingTxQty(e.target.value)}
+                                              className="bg-zinc-950 border border-zinc-800 font-mono text-xs text-zinc-200 p-2.5 rounded-lg outline-none"
+                                            />
+                                          </div>
+                                          <div className="flex flex-col gap-1">
+                                            <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Unit Specifier</label>
+                                            <input 
+                                              type="text"
+                                              value={editingTxVariant}
+                                              onChange={(e) => setEditingTxVariant(e.target.value)}
+                                              className="bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 p-2.5 rounded-lg outline-none"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        {/* Cost & Status */}
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div className="flex flex-col gap-1">
+                                            <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Unit Cost (₱)</label>
+                                            <input 
+                                              type="number"
+                                              value={editingTxCost}
+                                              onChange={(e) => setEditingTxCost(e.target.value)}
+                                              className="bg-zinc-950 border border-zinc-800 font-mono text-xs text-zinc-200 p-2.5 rounded-lg outline-none"
+                                            />
+                                          </div>
+                                          <div className="flex flex-col gap-1">
+                                            <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Status</label>
+                                            <select
+                                              value={editingTxStatus}
+                                              onChange={(e) => setEditingTxStatus(e.target.value as any)}
+                                              className="bg-zinc-950 border border-zinc-800 text-xs text-white p-2.5 rounded-lg outline-none cursor-pointer"
+                                            >
+                                              <option value="pending-delivery">⌛ Pending Delivery</option>
+                                              <option value="completed">✓ Store Stock Received</option>
+                                            </select>
+                                          </div>
+                                        </div>
+
+                                        {/* Scheduled/Delivered Date */}
+                                        <div className="flex flex-col gap-1 md:col-span-2">
+                                          <label className="text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wide">Scheduled/Delivered Date</label>
+                                          <input 
+                                            type="datetime-local"
+                                            value={editingTxDeliveryDate}
+                                            onChange={(e) => setEditingTxDeliveryDate(e.target.value)}
+                                            className="bg-zinc-950 border border-zinc-800 text-xs font-mono text-zinc-200 p-2.5 rounded-lg outline-none"
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-2 mt-2 justify-end border-t border-zinc-850 pt-3">
+                                        <button
+                                          onClick={() => { handleTactileClick(); setEditingTxId(null); }}
+                                          className="px-3.5 py-2 text-[10px] font-display font-bold text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-750 transition rounded-xl cursor-pointer uppercase tracking-wider"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          onClick={() => { handleTactileClick(); handleUpdateTx(tx.id); }}
+                                          className="px-4 py-2 text-[10px] font-display font-extrabold text-white bg-amber-500 hover:bg-amber-600 transition rounded-xl cursor-pointer uppercase tracking-wider shadow-lg shadow-amber-550/10"
+                                        >
+                                          Save Changes
+                                        </button>
+                                      </div>
+                                    </article>
+                                  );
+                                }
+
+                                return (
+                                  <article key={tx.id} className="bg-zinc-950 border border-zinc-850 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 font-display">
+                                    <div className="flex items-start gap-4 flex-1">
+                                      {tx.type === 'stock-in' ? (
+                                        <span className="w-8 h-8 rounded-full bg-emerald-950/40 text-emerald-400 flex items-center justify-center font-bold text-xs shrink-0">IN</span>
+                                      ) : (
+                                        <span className="w-8 h-8 rounded-full bg-rose-955 bg-rose-950/40 text-rose-400 flex items-center justify-center font-bold text-xs shrink-0">OUT</span>
+                                      )}
+                                      <div className="flex-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-sm font-bold text-zinc-200 block uppercase tracking-wide">{tx.itemName}</span>
+                                          <span className="px-1.5 py-0.5 bg-zinc-900 text-[10px] font-mono rounded text-zinc-500 border border-zinc-850/60 uppercase">{tx.variant}</span>
+                                        </div>
+                                        <span className="text-[10px] text-zinc-500 font-mono mt-0.5 block uppercase">
+                                          Branch Destination: <span className="text-zinc-300 font-bold">{tx.destinationBranch}</span> · Perform: {tx.performedBy} · Scheduled Delivery: {formattedDeliveryDate}
+                                        </span>
+                                        
+                                        {/* Tag Arrived helper */}
+                                        {tx.arrivalDate && (
+                                          <span className="text-[10px] text-emerald-400 font-bold mt-1 block uppercase">
+                                            ✓ Store Stock Arrived confirmation on: {new Date(tx.arrivalDate).toLocaleString('en-PH')}
+                                          </span>
+                                        )}
+
+                                        {tx.type === 'stock-out' && (
+                                          <span className="text-[10px] text-rose-400 font-mono mt-1 block uppercase">
+                                            ⚠ Stock Out reason: {tx.reason}
+                                          </span>
+                                        )}
+
+                                        {/* ADMIN QUICK ACTIONS PANEL FOR INCORRECT ENTRIES / BRANCH TAG ERROR */}
+                                        {currentRole === 'admin' && (
+                                          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-zinc-900/60">
+                                            <button
+                                              onClick={() => { handleTactileClick(); startEditingTx(tx); }}
+                                              className="p-1 px-2 text-[9px] font-display font-bold uppercase tracking-wider text-amber-500 hover:text-white border border-amber-900/60 hover:bg-amber-950/20 rounded-md transition cursor-pointer"
+                                              title="Edit dispatch transaction (adjust branch, item name, quantity, or variant specifier)"
+                                            >
+                                              ✏ Edit Tag / Details
+                                            </button>
+                                            {confirmingDeleteTxId === tx.id ? (
+                                              <div className="flex items-center gap-1.5 bg-red-950/20 border border-red-900/40 p-1 px-2 rounded-lg">
+                                                <span className="text-[9px] font-display font-semibold text-red-400">Confirm Delete?</span>
+                                                <button
+                                                  onClick={() => {
+                                                    handleTactileClick();
+                                                    handleDeleteTx(tx.id);
+                                                  }}
+                                                  className="px-2 py-0.5 text-[8.5px] font-display font-bold uppercase tracking-wider text-white bg-red-650 hover:bg-red-700 rounded transition-all cursor-pointer"
+                                                >
+                                                  Confirm
+                                                </button>
+                                                <button
+                                                  onClick={() => {
+                                                    handleTactileClick();
+                                                    setConfirmingDeleteTxId(null);
+                                                  }}
+                                                  className="px-2 py-0.5 text-[8.5px] font-display font-semibold uppercase tracking-wider text-zinc-400 hover:text-white bg-zinc-800 rounded transition-all cursor-pointer"
+                                                >
+                                                  Cancel
+                                                </button>
+                                              </div>
+                                            ) : (
+                                              <button
+                                                onClick={() => {
+                                                  handleTactileClick();
+                                                  setConfirmingDeleteTxId(tx.id);
+                                                }}
+                                                className="p-1 px-2 text-[9px] font-display font-bold uppercase tracking-wider text-red-500 hover:text-white border border-red-900/40 hover:bg-red-950/20 rounded-md transition cursor-pointer"
+                                                title="Delete/Remove dispatch transaction log"
+                                              >
+                                                🗑 Delete Dispatch
+                                              </button>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-3 self-end md:self-auto shrink-0">
+                                      <div className="text-right">
+                                        <span className="text-xs font-mono font-bold text-zinc-400 block">Qty: {tx.qty} units</span>
+                                        <span className="text-[10px] text-zinc-500 block uppercase">Unit Cost: ₱{tx.cost}</span>
+                                      </div>
+                                      
+                                      {/* Status display or Action receive confirmation */}
+                                      {isPending ? (
+                                        currentRole === 'cashier' && belongsToCashierBranch ? (
+                                          <motion.button 
+                                            whileTap={{ scale: 0.95 }}
+                                            onClick={() => handleReceiveStock(tx.id)}
+                                            className="bg-red-650 bg-red-600 hover:bg-red-700 text-[10px] font-display font-semibold transition text-white px-3 py-1.5 rounded-lg uppercase tracking-wider shadow-lg shadow-red-600/15 cursor-pointer"
+                                          >
+                                            Confirm Arrival Store Stock
+                                          </motion.button>
+                                        ) : (
+                                          <span className="text-[9px] uppercase tracking-wider font-extrabold text-amber-500 bg-amber-955 bg-amber-950/20 px-2.5 py-1 border border-amber-900/30 rounded-lg">
+                                            ⌛ Pending Delivery
+                                          </span>
+                                        )
+                                      ) : (
+                                        <span className="text-[9px] uppercase tracking-wider font-extrabold text-emerald-400 bg-emerald-950/20 px-2.5 py-1 border border-emerald-900/30 rounded-lg">
+                                          ✓ Store Stock Received
+                                        </span>
+                                      )}
+                                    </div>
+                                  </article>
+                                );
+                              })}
+                          </div>
+                        </div>
+
+                      </div>
+
+                      {/* COLUMN 3: FORMS ACTION SIDEBAR based on ACTIVE SUB-TAB */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                        
+                        {/* VIEW 1: RECEIVED COMPLETED SCREEN OR BRIEF DETAILS */}
+                        {activeInventoryTab === 'received' && (
+                          <div className="flex flex-col gap-4">
+                            <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-[#ebb213] border-b border-zinc-850 pb-2 mb-1 font-bold">
+                              🚚 Delivery Summary Status
+                            </h4>
+                            <p className="text-xs text-zinc-500 uppercase leading-relaxed font-display">
+                              This panel keeps a track record of all warehouse logistics movements. 
+                              Admin initiates stock transfers. Cashiers verify physical cargo arrivals at branches 
+                              and tag them as branch &quot;Store Stock&quot; to make them available inside kitchen operations.
+                            </p>
+                            
+                            <div className="mt-2 p-3 bg-zinc-950/50 border border-zinc-850 rounded-xl flex items-center justify-between">
+                              <span className="text-xs text-zinc-400 font-display">Active Warehouse Shipments:</span>
+                              <span className="font-mono text-sm font-bold text-amber-500">
+                                {inventoryTransactions.filter(tx => tx.status === 'pending-delivery').length} pending
+                              </span>
+                            </div>
+                            
+                            <div className="p-3 bg-zinc-950/50 border border-zinc-850 rounded-xl flex items-center justify-between">
+                              <span className="text-xs text-zinc-400 font-display">Arrived store stock counts:</span>
+                              <span className="font-mono text-sm font-bold text-emerald-400">
+                                {inventoryTransactions.filter(tx => tx.status === 'completed' && tx.type === 'stock-in').length} received
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* VIEW 2: STOCK IN (ADMIN ONLY FORM) */}
+                        {activeInventoryTab === 'stock-in' && currentRole === 'admin' && (
+                          <div className="flex flex-col gap-4">
+                            <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-amber-500 border-b border-zinc-850 pb-2 mb-1 font-bold">
+                              📥 Form: Warehouse Stock Tagging
+                            </h4>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Select stock item</label>
+                              <select 
+                                value={newStockItem}
+                                onChange={(e) => {
+                                  setNewStockItem(e.target.value);
+                                  // populate preset cost and variant if available on product
+                                  const prod = products.find(p => p.name === e.target.value);
+                                  if (prod) {
+                                    setNewStockVariant(prod.variant || 'Regular');
+                                    setNewStockCost(prod.cost?.toString() || '0');
+                                  }
+                                }}
+                                className="w-full bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-350 outline-none"
+                              >
+                                <option value="">-- Choose matching product --</option>
+                                {products.map(p => (
+                                  <option key={p.id} value={p.name}>{p.name}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Stock Quantity (units)</label>
+                              <input 
+                                type="number" 
+                                placeholder="e.g. 50" 
+                                value={newStockQty}
+                                onChange={(e) => setNewStockQty(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Quantity Variant Specifier (e.g. 50kg Sack, 100pcs Box)</label>
+                              <input 
+                                type="text" 
+                                placeholder="e.g. 50kg Sack / Regular Pack" 
+                                value={newStockVariant}
+                                onChange={(e) => setNewStockVariant(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Item Unit Cost (PHP)</label>
+                              <input 
+                                type="number" 
+                                placeholder="e.g. 2500" 
+                                value={newStockCost}
+                                onChange={(e) => setNewStockCost(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Destination Branch Delivery Target</label>
+                              <select 
+                                value={newStockDestBranch}
+                                onChange={(e) => setNewStockDestBranch(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-350 outline-none cursor-pointer"
+                              >
+                                {branches.map(b => (
+                                  <option key={b} value={b}>{b}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Expected Shipment Date</label>
+                              <input 
+                                type="date" 
+                                value={newStockDeliveryDate}
+                                onChange={(e) => setNewStockDeliveryDate(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-200 outline-none"
+                              />
+                            </div>
+
+                            <button 
+                              onClick={handleStockIn}
+                              className="w-full bg-emerald-600 hover:bg-emerald-700 text-xs font-display font-medium text-white p-3 rounded-xl transition uppercase tracking-wider font-bold shadow-lg shadow-emerald-600/15 cursor-pointer"
+                            >
+                              🚀 Tag and Dispatch Delivery
+                            </button>
+                          </div>
+                        )}
+
+                        {/* VIEW 3: STOCK OUT (BOTH ADMIN & CASHIER) */}
+                        {activeInventoryTab === 'stock-out' && (
+                          <div className="flex flex-col gap-4">
+                            <h4 className="text-xs uppercase font-display font-extrabold tracking-widest text-red-500 border-b border-zinc-850 pb-2 mb-1 font-bold">
+                              📤 Form: Register Stock Out Outflow
+                            </h4>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Select stock item</label>
+                              <select 
+                                value={selectedStockOutItemKey}
+                                onChange={(e) => setSelectedStockOutItemKey(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-350 outline-none"
+                              >
+                                <option value="">-- Choose Stock Item --</option>
+                                {products.map(p => (
+                                  <option key={p.id} value={p.name}>{p.name} ({p.variant || 'Regular'})</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Stock Quantity to write off (units)</label>
+                              <input 
+                                type="number" 
+                                placeholder="e.g. 5" 
+                                value={stockOutQty}
+                                onChange={(e) => setStockOutQty(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 placeholder-zinc-700 outline-none"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Write-off Reason Classification</label>
+                              <select 
+                                value={stockOutReason}
+                                onChange={(e) => setStockOutReason(e.target.value)}
+                                className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs text-zinc-350 outline-none"
+                              >
+                                <option value="Damaged">Ingredient Spoiled / Damaged</option>
+                                <option value="Wasted">Kitchen Waste / Expired</option>
+                                <option value="Shrinkage">Cargo Defect / Shrinkage</option>
+                                <option value="Kitchen Consumption">Dispatched for kitchen cooking trials</option>
+                                <option value="Theft / Lost">Theft / Discrepancy In Count</option>
+                              </select>
+                            </div>
+
+                            <button 
+                              onClick={handleStockOut}
+                              className="w-full bg-red-650 bg-red-600 hover:bg-red-700 text-xs font-display font-medium text-white p-3 rounded-xl transition uppercase tracking-wider font-bold shadow-lg shadow-red-600/15 cursor-pointer"
+                            >
+                              📤 Record Stock Out Outflow
+                            </button>
+                          </div>
+                        )}
+
                       </div>
 
                     </div>
@@ -3218,9 +5047,9 @@ export default function BossRicePOS() {
                     onChange={(e) => { handleTactileClick(); setShiftBranch(e.target.value); }}
                     className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs font-display text-zinc-200 outline-none cursor-pointer hover:border-zinc-700 transition"
                   >
-                    <option value="Main Branch">Main Branch</option>
-                    <option value="Mandaue City Station">Mandaue City Station</option>
-                    <option value="Cebu CBD Terminal">Cebu CBD Terminal</option>
+                    {branches.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
                     <option value="Custom...">Custom / Other Location...</option>
                   </select>
                 </div>
