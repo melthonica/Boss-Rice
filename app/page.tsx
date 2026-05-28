@@ -9,7 +9,7 @@ import {
   Coins, TrendingUp, Grid, RefreshCw, Smartphone, 
   User, Database, Calendar, Briefcase, PlusCircle,
   Edit, Save, Download, UserPlus, MapPin, AlertTriangle, FileSpreadsheet, Lock,
-  ChevronLeft, ChevronRight, Sparkles, Package, Truck, Boxes
+  ChevronLeft, ChevronRight, Sparkles, Package, Truck, Boxes, Palette, ToggleLeft, Clock
 } from 'lucide-react';
 
 // --- TYPES ---
@@ -200,6 +200,15 @@ const mapLoadedProducts = (prods: Product[]): Product[] => {
   });
 };
 
+const formatDatetimeLocal = (date: Date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+};
+
 export default function BossRicePOS() {
   // --- AUTH STATES ---
   const [currentRole, setCurrentRole] = useState<'admin' | 'cashier' | null>(null);
@@ -244,6 +253,35 @@ export default function BossRicePOS() {
   const [isDeviceLimitBlocked, setIsDeviceLimitBlocked] = useState<boolean>(false);
   const [devLockPasscode, setDevLockPasscode] = useState<string>('');
   const [devLockError, setDevLockError] = useState<string>('');
+
+  // --- OFFLINE SESSION RECOVERY STATE & ACCIDENT LOGOUT UTILITY ---
+  const [recoveryStart, setRecoveryStart] = useState<string>(() => {
+    const d = new Date(Date.now() - 12 * 60 * 60 * 1000);
+    return formatDatetimeLocal(d);
+  });
+  const [recoveryEnd, setRecoveryEnd] = useState<string>(() => formatDatetimeLocal(new Date()));
+  const [isRecovering, setIsRecovering] = useState<boolean>(false);
+  const [recoveredCount, setRecoveredCount] = useState<number | null>(null);
+
+  // Custom states added for licensing parameters requested by user
+  const [posName, setPosName] = useState<string>('Boss Rice');
+  const [currentTheme, setCurrentTheme] = useState<string>('classic-red');
+  const [timeFormat, setTimeFormat] = useState<'12h' | '24h'>('24h');
+  const [timeOffsetHours, setTimeOffsetHours] = useState<number>(0);
+  const [maxProducts, setMaxProducts] = useState<number>(25);
+  const [enabledTabs, setEnabledTabs] = useState<{
+    inventory: boolean;
+    expenses: boolean;
+    shifts: boolean;
+    reports: boolean;
+    products: boolean;
+  }>({
+    inventory: true,
+    expenses: true,
+    shifts: true,
+    reports: true,
+    products: true
+  });
 
   // --- BATCH STOCK TAGGING LIST STATES ---
   const [isBatchMode, setIsBatchMode] = useState<boolean>(false);
@@ -412,6 +450,153 @@ export default function BossRicePOS() {
 
   const [currentTime, setCurrentTime] = useState<string>('00:00:00');
 
+  // --- THEME STYLE ACCENTS AND ACCENT MAP ---
+  const tc = useMemo(() => {
+    switch (currentTheme) {
+      case 'ocean-blue':
+        return {
+          id: 'ocean-blue',
+          name: 'Ocean Blue',
+          text: 'text-cyan-400',
+          textBtn: 'text-cyan-500',
+          textMuted: 'text-cyan-600',
+          border: 'border-cyan-500/30',
+          borderMuted: 'border-cyan-900/40',
+          bg: 'bg-cyan-600',
+          bgHover: 'hover:bg-cyan-700',
+          bgActive: 'bg-cyan-600',
+          bgMuted: 'bg-cyan-950/20',
+          gradient: 'from-cyan-500 to-blue-600',
+          badge: 'bg-cyan-950/40 text-cyan-400 border-cyan-900/40',
+          ring: 'focus:border-cyan-500',
+          shadow: 'shadow-cyan-600/10',
+          accentBg: 'bg-cyan-600',
+          accentText: 'text-cyan-500',
+          spinner: 'border-t-cyan-500',
+          primaryBtn: 'bg-cyan-600 hover:bg-cyan-700 text-white',
+          secBtn: 'border border-cyan-500/30 text-cyan-555 hover:bg-cyan-950/25',
+          indicator: 'bg-cyan-500',
+          alertBg: 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400',
+          priceBg: 'bg-cyan-950/20 border-cyan-500/20 text-cyan-400',
+          dot: 'bg-cyan-550 border-cyan-550 shadow-cyan-550/40',
+          textHover: 'hover:text-cyan-400 hover:border-cyan-500/50'
+        };
+      case 'emerald-zen':
+        return {
+          id: 'emerald-zen',
+          name: 'Emerald Zen',
+          text: 'text-emerald-400',
+          textBtn: 'text-emerald-500',
+          textMuted: 'text-emerald-600',
+          border: 'border-emerald-500/30',
+          borderMuted: 'border-emerald-900/40',
+          bg: 'bg-emerald-600',
+          bgHover: 'hover:bg-emerald-700',
+          bgActive: 'bg-emerald-600',
+          bgMuted: 'bg-emerald-950/20',
+          gradient: 'from-emerald-500 to-teal-600',
+          badge: 'bg-emerald-950/40 text-emerald-400 border-emerald-900/40',
+          ring: 'focus:border-emerald-500',
+          shadow: 'shadow-emerald-600/10',
+          accentBg: 'bg-emerald-600',
+          accentText: 'text-emerald-505',
+          spinner: 'border-t-emerald-500',
+          primaryBtn: 'bg-emerald-600 hover:bg-emerald-700 text-white',
+          secBtn: 'border border-emerald-505 text-emerald-505 hover:bg-emerald-950/25',
+          indicator: 'bg-emerald-500',
+          alertBg: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+          priceBg: 'bg-emerald-950/20 border-emerald-500/20 text-emerald-400',
+          dot: 'bg-emerald-555 border-emerald-555 shadow-emerald-555/40',
+          textHover: 'hover:text-emerald-400 hover:border-emerald-500/50'
+        };
+      case 'lux-gold':
+        return {
+          id: 'lux-gold',
+          name: 'Lux Gold',
+          text: 'text-amber-400',
+          textBtn: 'text-amber-500',
+          textMuted: 'text-amber-600',
+          border: 'border-amber-500/30',
+          borderMuted: 'border-amber-900/40',
+          bg: 'bg-amber-600',
+          bgHover: 'hover:bg-amber-700',
+          bgActive: 'bg-amber-600',
+          bgMuted: 'bg-amber-955/20',
+          gradient: 'from-amber-500 to-yellow-600',
+          badge: 'bg-amber-950/40 text-amber-400 border-amber-900/40',
+          ring: 'focus:border-amber-500',
+          shadow: 'shadow-amber-600/10',
+          accentBg: 'bg-amber-600',
+          accentText: 'text-amber-505',
+          spinner: 'border-t-amber-500',
+          primaryBtn: 'bg-amber-600 hover:bg-amber-700 text-white',
+          secBtn: 'border border-amber-505 text-amber-505 hover:bg-amber-950/25',
+          indicator: 'bg-amber-500',
+          alertBg: 'bg-amber-500/10 border-amber-500/20 text-amber-400',
+          priceBg: 'bg-amber-950/20 border-amber-500/20 text-amber-400',
+          dot: 'bg-offset-gold border-amber-500 shadow-gold',
+          textHover: 'hover:text-amber-400 hover:border-amber-505/50'
+        };
+      case 'cyber-purple':
+        return {
+          id: 'cyber-purple',
+          name: 'Cyber Purple',
+          text: 'text-fuchsia-400',
+          textBtn: 'text-fuchsia-500',
+          textMuted: 'text-fuchsia-600',
+          border: 'border-fuchsia-500/30',
+          borderMuted: 'border-fuchsia-900/40',
+          bg: 'bg-fuchsia-650',
+          bgHover: 'hover:bg-fuchsia-750',
+          bgActive: 'bg-fuchsia-650',
+          bgMuted: 'bg-fuchsia-950/20',
+          gradient: 'from-fuchsia-600 to-violet-650',
+          badge: 'bg-fuchsia-950/40 text-fuchsia-400 border-fuchsia-900/40',
+          ring: 'focus:border-fuchsia-500',
+          shadow: 'shadow-fuchsia-600/10',
+          accentBg: 'bg-fuchsia-650',
+          accentText: 'text-fuchsia-500',
+          spinner: 'border-t-fuchsia-500',
+          primaryBtn: 'bg-fuchsia-650 hover:bg-fuchsia-755 text-white',
+          secBtn: 'border border-fuchsia-505 text-fuchsia-505 hover:bg-fuchsia-950/25',
+          indicator: 'bg-fuchsia-500',
+          alertBg: 'bg-fuchsia-500/10 border-fuchsia-500/20 text-fuchsia-400',
+          priceBg: 'bg-fuchsia-950/20 border-fuchsia-500/20 text-fuchsia-400',
+          dot: 'bg-fuchsia-505 border-fuchsia-505 shadow-fuchsia-555/40',
+          textHover: 'hover:text-fuchsia-400 hover:border-fuchsia-505/50'
+        };
+      case 'classic-red':
+      default:
+        return {
+          id: 'classic-red',
+          name: 'Classic Red',
+          text: 'text-red-500',
+          textBtn: 'text-red-500',
+          textMuted: 'text-red-650',
+          border: 'border-red-500/30',
+          borderMuted: 'border-red-900/40',
+          bg: 'bg-red-650',
+          bgHover: 'hover:bg-red-700',
+          bgActive: 'bg-red-650',
+          bgMuted: 'bg-red-950/20',
+          gradient: 'from-red-600 to-amber-500',
+          badge: 'bg-red-950/40 text-red-400 border-red-900/40',
+          ring: 'focus:border-red-500',
+          shadow: 'shadow-red-600/15',
+          accentBg: 'bg-red-650',
+          accentText: 'text-red-500',
+          spinner: 'border-t-red-600',
+          primaryBtn: 'bg-red-650 hover:bg-red-750 text-white',
+          secBtn: 'border border-red-955 text-red-500 hover:bg-red-950/20',
+          indicator: 'bg-red-550',
+          alertBg: 'bg-red-500/10 border-red-500/20 text-red-400',
+          priceBg: 'bg-red-950/20 border-red-955 text-red-400',
+          dot: 'bg-red-500 border-red-500 scale-110 shadow-md shadow-red-500/40',
+          textHover: 'hover:text-red-400 hover:border-red-500/50'
+        };
+    }
+  }, [currentTheme]);
+
   // --- AUTO RE-LOAD REFS ---
   const syncTimeoutRef = useRef<any>(null);
 
@@ -423,14 +608,26 @@ export default function BossRicePOS() {
     }, 2800);
   };
 
-  // --- PHILIPPINES LOCAL CLOCK ---
+  // --- PHILIPPINES LOCAL CLOCK WITH CUSTOM RANGE & HOUR SLIDING SETTINGS ---
   useEffect(() => {
-    const interval = setInterval(() => {
+    const updateTime = () => {
       const now = new Date();
-      setCurrentTime(now.toLocaleTimeString('en-PH', { hour12: false }));
-    }, 1000);
+      if (timeOffsetHours !== 0) {
+        now.setHours(now.getHours() + timeOffsetHours);
+      }
+      setCurrentTime(
+        now.toLocaleTimeString('en-PH', {
+          hour12: timeFormat === '12h',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        })
+      );
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [timeFormat, timeOffsetHours]);
 
   // --- DEFAULT FALLBACK PRODUCTS ---
   const defaultProducts: Product[] = useMemo(() => [
@@ -572,6 +769,33 @@ export default function BossRicePOS() {
       });
 
       localStorage.setItem(`br_orders_${period}`, JSON.stringify(mappedItems));
+
+      // Proactively back up synced/loaded orders into the browser's persistent device-level archive
+      try {
+        const archive: Order[] = JSON.parse(localStorage.getItem('br_offline_order_archive_v1') || '[]');
+        let modified = false;
+        mappedItems.forEach((mo: Order) => {
+          const alreadyExists = archive.some(a => 
+            String(a.order_number) === String(mo.order_number) && 
+            a.created_at === mo.created_at &&
+            (a.cashier_name || '') === (mo.cashier_name || '')
+          );
+          if (!alreadyExists) {
+            archive.push(mo);
+            modified = true;
+          }
+        });
+        if (modified) {
+          // Keep to last 1000 records to respect localStorage limits safely
+          if (archive.length > 1000) {
+            archive.splice(0, archive.length - 1000);
+          }
+          localStorage.setItem('br_offline_order_archive_v1', JSON.stringify(archive));
+        }
+      } catch (e) {
+        console.warn('Sync order archiving to persistent local store failed silently:', e);
+      }
+
       setSyncStatus('online');
     } catch (err) {
       console.error('syncOrders error:', err);
@@ -755,6 +979,36 @@ export default function BossRicePOS() {
       }
       setRegisteredDevices(dList);
 
+      // Load custom properties requested by user
+      const savedPosName = localStorage.getItem('br_pos_name');
+      if (savedPosName) {
+        setPosName(savedPosName);
+      }
+      const savedTheme = localStorage.getItem('br_theme');
+      if (savedTheme) {
+        setCurrentTheme(savedTheme);
+      }
+      const savedTimeFormat = localStorage.getItem('br_time_format');
+      if (savedTimeFormat) {
+        setTimeFormat(savedTimeFormat as '12h' | '24h');
+      }
+      const savedTimeOffset = localStorage.getItem('br_time_offset');
+      if (savedTimeOffset !== null) {
+        setTimeOffsetHours(parseInt(savedTimeOffset) || 0);
+      }
+      const savedMaxProducts = localStorage.getItem('br_sub_max_products');
+      if (savedMaxProducts !== null) {
+        setMaxProducts(parseInt(savedMaxProducts) || 25);
+      }
+      const savedEnabledTabs = localStorage.getItem('br_enabled_tabs');
+      if (savedEnabledTabs) {
+        try {
+          setEnabledTabs(JSON.parse(savedEnabledTabs));
+        } catch (e) {
+          console.error("Failed loading enabled tabs, using default", e);
+        }
+      }
+
       const session = localStorage.getItem('br_session_v1');
       if (session) {
         const parsed = JSON.parse(session);
@@ -862,6 +1116,13 @@ export default function BossRicePOS() {
         setCurrentRole('cashier');
         setActiveTab('pos');
         setTempUser(matchedUser);
+
+        // Reset recovery fields on fresh cashier sign in
+        const now = new Date();
+        const twelveHoursAgo = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+        setRecoveryStart(formatDatetimeLocal(twelveHoursAgo));
+        setRecoveryEnd(formatDatetimeLocal(now));
+        setRecoveredCount(null);
 
         // Check if there is an active shift cached in localStorage
         const cachedActiveShift = localStorage.getItem('br_active_shift');
@@ -1030,6 +1291,144 @@ export default function BossRicePOS() {
     }
   };
 
+  // --- OFFLINE SESSION RECOVERY & RE-UPLOAD LOGIC ---
+  const restoreAndSyncOfflineReceipts = async () => {
+    const activeStaff = tempUser || currentUser;
+    if (!activeStaff) return;
+    setIsRecovering(true);
+    setRecoveredCount(null);
+    if (audioEnabled) playSound('click');
+
+    try {
+      // 1. Load the persistent global offline archive from localStorage
+      const archive: Order[] = JSON.parse(localStorage.getItem('br_offline_order_archive_v1') || '[]');
+      
+      if (archive.length === 0) {
+        showNotification('ℹ️ No cached orders found on this web browser/device.');
+        setIsRecovering(false);
+        return;
+      }
+
+      // 2. Filter by username and selected datetime range
+      const startTime = new Date(recoveryStart).getTime();
+      const endTime = new Date(recoveryEnd).getTime();
+
+      const matchedOrders = archive.filter(order => {
+        const orderTime = new Date(order.created_at).getTime();
+        const matchesCashier = order.cashier_name === activeStaff.username;
+        const matchesTime = orderTime >= startTime && orderTime <= endTime;
+        return matchesCashier && matchesTime;
+      });
+
+      if (matchedOrders.length === 0) {
+        showNotification(`ℹ️ No cached orders found for ${activeStaff.username} within that time range.`);
+        setIsRecovering(false);
+        return;
+      }
+
+      // 3. Verify existing remote database records, fetch any remote orders from Supabase 
+      // for this timeframe, matching cashier_name.
+      setSyncStatus('syncing');
+      const { data: remoteOrders, error: fetchErr } = await supabase
+        .from(ordersTableName)
+        .select('order_number, created_at, cashier_name')
+        .gte('created_at', new Date(recoveryStart).toISOString())
+        .lte('created_at', new Date(recoveryEnd).toISOString());
+
+      if (fetchErr) {
+        console.warn('Could not verify existing remote orders, attempting batch inserts directly with caution:', fetchErr);
+      }
+
+      const existingOrdersList = remoteOrders || [];
+
+      // Determine which items in matchedOrders do NOT exist in existingOrdersList
+      const ordersToReupload = matchedOrders.filter(mo => {
+        const existsRemotely = existingOrdersList.some((ro: any) => 
+          String(ro.order_number) === String(mo.order_number) &&
+          ro.cashier_name === mo.cashier_name
+        );
+        return !existsRemotely;
+      });
+
+      if (ordersToReupload.length === 0) {
+        // All matching local records already loaded! Let's ensure they are set in the state anyway
+        setAllOrders(prev => {
+          const merged = [...prev];
+          matchedOrders.forEach(mo => {
+            const alreadyInState = merged.some(p => p.order_number === mo.order_number && p.created_at === mo.created_at);
+            if (!alreadyInState) {
+              merged.push(mo);
+            }
+          });
+          merged.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          return merged;
+        });
+
+        // Store range cache for active daily/report displays
+        localStorage.setItem(`br_orders_${reportPeriod}`, JSON.stringify(matchedOrders));
+
+        showNotification(`✅ All ${matchedOrders.length} cached orders are already securely synced in the cloud db! Loaded in active memory UI.`);
+        setRecoveredCount(0);
+        setIsRecovering(false);
+        if (audioEnabled) playSound('success');
+        return;
+      }
+
+      // 4. Perform database insertion for the missing ones in a single batch
+      const insertionPayloads = ordersToReupload.map(order => {
+        return ordersTableName === 'pos_orders' ? {
+          order_number: String(order.order_number),
+          items: order.items,
+          total: order.total,
+          payment_method: order.payment_method,
+          cashier_name: order.cashier_name,
+          branch: order.branch || 'Main Branch',
+          created_at: order.created_at
+        } : order;
+      });
+
+      const { error: insertErr } = await supabase.from(ordersTableName).insert(insertionPayloads);
+      
+      if (insertErr) {
+        throw insertErr;
+      }
+
+      const successCount = ordersToReupload.length;
+
+      // 5. Update local state
+      setAllOrders(prev => {
+        const merged = [...prev];
+        matchedOrders.forEach(mo => {
+          const alreadyInState = merged.some(p => p.order_number === mo.order_number && p.created_at === mo.created_at);
+          if (!alreadyInState) {
+            merged.push(mo);
+          }
+        });
+        merged.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        return merged;
+      });
+
+      // Clear standard unsynced buffer for these specifically
+      const activeUnsynced: Order[] = JSON.parse(localStorage.getItem('br_unsynced_orders') || '[]');
+      const filteredUnsynced = activeUnsynced.filter(uo => {
+        const isMatched = matchedOrders.some(mo => mo.order_number === uo.order_number && mo.created_at === uo.created_at);
+        return !isMatched;
+      });
+      localStorage.setItem('br_unsynced_orders', JSON.stringify(filteredUnsynced));
+
+      setSyncStatus('online');
+      setRecoveredCount(successCount);
+      showNotification(`🎉 Successfully recovered & re-uploaded ${successCount} offline orders to database!`);
+      if (audioEnabled) playSound('success');
+    } catch (restoreError) {
+      console.error('Backup restoration failed:', restoreError);
+      showNotification('❌ Recovery sync failed. Please check network connection / server log.');
+      setSyncStatus('offline');
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
   // --- RECORD DELETE OPERATIONS ---
   const deleteOrder = async (orderId?: number, orderNum?: number) => {
     if (currentRole !== 'admin') {
@@ -1089,7 +1488,7 @@ export default function BossRicePOS() {
 
     // Build standard high-quality CSV
     let csvStr = "\uFEFF"; // Byte-order mark for Excel compatibility
-    csvStr += `"BOSS RICE SALES REPORT"\n`;
+    csvStr += `"${posName.toUpperCase()} SALES REPORT"\n`;
     csvStr += `"Selected Date Range:","${startDateFilter} to ${endDateFilter}"\n`;
     csvStr += `"Branch Filter:","${selectedBranchFilter}"\n`;
     csvStr += `"Cashier Filter:","${selectedCashierFilter}"\n`;
@@ -1188,7 +1587,9 @@ export default function BossRicePOS() {
     const localUrl = URL.createObjectURL(blobObj);
     const hiddenLink = document.createElement("a");
     hiddenLink.setAttribute("href", localUrl);
-    hiddenLink.setAttribute("download", `Boss_Rice_Sales_Report_${startDateFilter}_to_${endDateFilter}.csv`);
+    
+    const sanitizedFileName = posName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    hiddenLink.setAttribute("download", `${sanitizedFileName}_Sales_Report_${startDateFilter}_to_${endDateFilter}.csv`);
     document.body.appendChild(hiddenLink);
     hiddenLink.click();
     document.body.removeChild(hiddenLink);
@@ -1613,6 +2014,18 @@ export default function BossRicePOS() {
       created_at: new Date().toISOString()
     };
 
+    // Archiving order persistently in local browser device cache for emergency shift recovery:
+    try {
+      const archive: Order[] = JSON.parse(localStorage.getItem('br_offline_order_archive_v1') || '[]');
+      archive.push(newOrderRecord);
+      if (archive.length > 1000) {
+        archive.shift(); // maintain 1000 items ceiling for storage security
+      }
+      localStorage.setItem('br_offline_order_archive_v1', JSON.stringify(archive));
+    } catch (e) {
+      console.warn('Emergency order logging to browser archive failed:', e);
+    }
+
     if (audioEnabled) playSound('success');
 
     // Dynamically increment shift cumulative sales balance
@@ -1709,6 +2122,12 @@ export default function BossRicePOS() {
 
   // --- PRODUCT INVENTORY CONTROL ---
   const triggerAddProduct = async () => {
+    if (products.length >= maxProducts) {
+      if (audioEnabled) playSound('error');
+      showNotification(`🚫 Subscription Limit Exceeded: You have reached the maximum allowance of ${maxProducts} products for this system license.`);
+      return;
+    }
+
     const priceNum = parseFloat(newProdPrice);
     if (!newProdName.trim() || isNaN(priceNum) || priceNum <= 0) {
       if (audioEnabled) playSound('error');
@@ -2441,24 +2860,37 @@ export default function BossRicePOS() {
       {/* ─── INITIALIZING LOADER ─── */}
       {isInitializing && currentRole && (
         <div className="fixed inset-0 bg-zinc-950 z-50 flex flex-col items-center justify-center gap-4">
-          <div className="w-12 h-12 rounded-full border-2 border-zinc-800 border-t-red-600 animate-spin" />
-          <span className="text-xs font-display uppercase tracking-widest text-zinc-500 animate-pulse">Initializing Boss Rice System...</span>
+          <div className={`w-12 h-12 rounded-full border-2 border-zinc-800 ${tc.spinner} animate-spin`} />
+          <span className="text-xs font-display uppercase tracking-widest text-zinc-500 animate-pulse">Initializing {posName} System...</span>
         </div>
       )}
 
       {/* ─── 1. LOGIN SCREEN (If not authenticated) ─── */}
       {!currentRole ? (
-        <main className="min-h-screen flex items-center justify-center px-4 py-12 relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-red-950/20 via-zinc-950 to-zinc-950">
+        <main className="min-h-screen flex items-center justify-center px-4 py-12 relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-zinc-950">
           
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/5 blur-[120px] rounded-full pointer-events-none" />
+          <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-indigo-500/5 blur-[120px] rounded-full pointer-events-none`} />
 
           <section className="w-full max-w-md bg-zinc-900/90 border border-zinc-800 rounded-3xl p-8 shadow-2xl relative z-10 backdrop-blur-md">
             
             <header className="text-center mb-8">
               <h1 className="text-5xl font-display font-black tracking-tight text-white m-0 leading-none">
-                BOSS <span className="text-red-500">RICE</span>
+                {(() => {
+                  const words = posName.split(' ');
+                  if (words.length > 1) {
+                    const firstPart = words.slice(0, -1).join(' ').toUpperCase();
+                    const lastPart = words[words.length - 1].toUpperCase();
+                    return (
+                      <>
+                        {firstPart} <span className={tc.text}>{lastPart}</span>
+                      </>
+                    );
+                  } else {
+                    return posName.toUpperCase();
+                  }
+                })()}
               </h1>
-              <p className="text-xs font-display font-semibold tracking-widest uppercase text-amber-500 mt-2">
+              <p className="text-xs font-display font-semibold tracking-widest uppercase text-zinc-400 mt-2">
                 Point Of Sale Terminal
               </p>
             </header>
@@ -2552,12 +2984,25 @@ export default function BossRicePOS() {
           {/* HEADER */}
           <header className="flex-none bg-zinc-900 border-b border-zinc-800 px-3 py-3 md:px-6 md:py-4 flex items-center justify-between shadow-md relative z-30">
             <div className="flex items-center gap-2.5 md:gap-4 min-w-0">
-              <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-tr from-red-600 to-amber-500 rounded-lg md:rounded-xl flex items-center justify-center font-display font-extrabold text-white text-xs md:text-sm tracking-tight shadow-lg shadow-red-500/10 shrink-0">
-                BR
+              <div className={`w-8 h-8 md:w-10 md:h-10 bg-gradient-to-tr ${tc.gradient} rounded-lg md:rounded-xl flex items-center justify-center font-display font-extrabold text-white text-xs md:text-sm tracking-tight shadow-lg ${tc.shadow} shrink-0`}>
+                {posName.split(' ').map(w => w[0] || '').join('').substring(0, 2).toUpperCase() || 'POS'}
               </div>
               <div className="min-w-0">
-                <h1 className="text-base md:text-xl font-display font-black tracking-tight text-white leading-none">
-                  BOSS <span className="text-red-500">RICE</span>
+                <h1 className="text-base md:text-xl font-display font-black tracking-tight text-white leading-none animate-fade-in">
+                  {(() => {
+                    const words = posName.split(' ');
+                    if (words.length > 1) {
+                      const firstPart = words.slice(0, -1).join(' ').toUpperCase();
+                      const lastPart = words[words.length - 1].toUpperCase();
+                      return (
+                        <>
+                          {firstPart} <span className={tc.text}>{lastPart}</span>
+                        </>
+                      );
+                    } else {
+                      return posName.toUpperCase();
+                    }
+                  })()}
                 </h1>
                 <div className="flex items-center gap-1.5 mt-0.5 md:mt-1 min-w-0">
                   <p className="text-[9px] md:text-[10px] uppercase font-display tracking-widest text-zinc-500 flex items-center gap-1 shrink-0">
@@ -2640,7 +3085,7 @@ export default function BossRicePOS() {
                   onClick={() => { handleTactileClick(); setActiveTab('pos'); }}
                   className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                     activeTab === 'pos' 
-                      ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                      ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
                       : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                   }`}
                 >
@@ -2649,66 +3094,76 @@ export default function BossRicePOS() {
 
                 {currentRole === 'admin' ? (
                   <>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('reports'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
-                        activeTab === 'reports' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <TrendingUp className="w-3 md:w-3.5 h-3 md:h-3.5" /> Sales Reports
-                    </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('products'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
-                        activeTab === 'products' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <Settings className="w-3 md:w-3.5 h-3 md:h-3.5" /> Products Tab
-                    </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('shifts'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
-                        activeTab === 'shifts' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <MapPin className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Shifts & Branches
-                    </button>
+                    {enabledTabs.reports && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('reports'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                          activeTab === 'reports' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <TrendingUp className="w-3 md:w-3.5 h-3 md:h-3.5" /> Sales Reports
+                      </button>
+                    )}
+                    {enabledTabs.products && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('products'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
+                          activeTab === 'products' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <Settings className="w-3 md:w-3.5 h-3 md:h-3.5" /> Products Tab
+                      </button>
+                    )}
+                    {enabledTabs.shifts && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('shifts'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap relative ${
+                          activeTab === 'shifts' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <MapPin className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Shifts & Branches
+                      </button>
+                    )}
                     <button 
                       onClick={() => { handleTactileClick(); setActiveTab('staff'); }}
                       className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'staff' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
                           : 'bg-zinc-905 text-zinc-400 border-zinc-805 hover:text-zinc-200'
                       }`}
                     >
                       <UserPlus className="w-3 md:w-3.5 h-3 md:h-3.5 text-emerald-500" /> Staff
                     </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
-                        activeTab === 'inventory' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Stock & Delivery
-                    </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
-                        activeTab === 'expenses' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-red-500" /> Expenses
-                    </button>
+                    {enabledTabs.inventory && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                          activeTab === 'inventory' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Stock & Delivery
+                      </button>
+                    )}
+                    {enabledTabs.expenses && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                          activeTab === 'expenses' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-red-500" /> Expenses
+                      </button>
+                    )}
                     {isDeveloperMode && (
                       <button 
                         onClick={() => { handleTactileClick(); setActiveTab('developer'); }}
@@ -2728,32 +3183,36 @@ export default function BossRicePOS() {
                       onClick={() => { handleTactileClick(); setActiveTab('myshift'); }}
                       className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
                         activeTab === 'myshift' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
+                          ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
                           : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
                       }`}
                     >
                       <Briefcase className="w-3 md:w-3.5 h-3 md:h-3.5" /> My Shift
                     </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
-                        activeTab === 'inventory' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Store Stock
-                    </button>
-                    <button 
-                      onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
-                      className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
-                        activeTab === 'expenses' 
-                          ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/10' 
-                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-rose-500" /> Log Expenses
-                    </button>
+                    {enabledTabs.inventory && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('inventory'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                          activeTab === 'inventory' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <Boxes className="w-3 md:w-3.5 h-3 md:h-3.5 text-amber-500" /> Store Stock
+                      </button>
+                    )}
+                    {enabledTabs.expenses && (
+                      <button 
+                        onClick={() => { handleTactileClick(); setActiveTab('expenses'); }}
+                        className={`px-3 py-1.5 md:px-4 md:py-2 text-[11px] md:text-xs font-display font-semibold uppercase tracking-wider rounded-lg transition-all border flex items-center gap-1.5 whitespace-nowrap ${
+                          activeTab === 'expenses' 
+                            ? `${tc.bg} text-white ${tc.border} shadow-lg ${tc.shadow}` 
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <Coins className="w-3 md:w-3.5 h-3 md:h-3.5 text-rose-500" /> Log Expenses
+                      </button>
+                    )}
                   </>
                 )}
 
@@ -4116,6 +4575,190 @@ export default function BossRicePOS() {
                         </button>
                       </div>
 
+                      {/* CARD 5: CUSTOM BRANDING & SCALE LIMITS */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Settings className="w-4 h-4 text-indigo-400" /> Custom Branding & Scale Limits
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Rebrand the Point of Sale with a custom name and enforce a maximum product limit allowed on menus.
+                        </p>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Custom POS Brand Name</label>
+                            <input 
+                              type="text" 
+                              value={posName}
+                              onChange={(e) => {
+                                const newName = e.target.value;
+                                setPosName(newName);
+                                localStorage.setItem('br_pos_name', newName);
+                              }}
+                              placeholder="e.g. Boss Rice"
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-sans text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Max Menu Items Allowed</label>
+                            <input 
+                              type="number" 
+                              value={maxProducts}
+                              onChange={(e) => {
+                                const num = parseInt(e.target.value) || 1;
+                                setMaxProducts(num);
+                                localStorage.setItem('br_sub_max_products', num.toString());
+                              }}
+                              className="bg-zinc-950 border border-zinc-850 p-3 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* CARD 6: VISUAL ENVIRONMENT THEME ACCENTS */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Palette className="w-4 h-4 text-indigo-400" /> Visual Palette Theme Accent
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Select the default brand identity accent palette across both cashier and admin panels.
+                        </p>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                          {[
+                            { id: 'classic-red', name: 'Classic Red', bg: 'bg-red-600' },
+                            { id: 'ocean-blue', name: 'Ocean Blue', bg: 'bg-cyan-500' },
+                            { id: 'emerald-zen', name: 'Emerald Zen', bg: 'bg-emerald-500' },
+                            { id: 'lux-gold', name: 'Lux Gold', bg: 'bg-amber-500' },
+                            { id: 'cyber-purple', name: 'Cyber Purple', bg: 'bg-fuchsia-605' },
+                          ].map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={() => {
+                                setCurrentTheme(t.id);
+                                localStorage.setItem('br_theme', t.id);
+                                showNotification(`🎨 Theme switched to ${t.name}!`);
+                                if (audioEnabled) playSound('click');
+                              }}
+                              className={`p-2.5 rounded-xl border font-display text-[10px] uppercase font-semibold tracking-wider flex items-center gap-2 transition-all ${
+                                currentTheme === t.id
+                                  ? 'bg-zinc-800 text-white border-indigo-500 shadow-md'
+                                  : 'bg-zinc-950 text-zinc-400 border-zinc-850 hover:border-zinc-700'
+                              }`}
+                            >
+                              <span className={`w-2.5 h-2.5 rounded-full ${t.bg} shrink-0`} />
+                              <span className="truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* CARD 7: SYSTEM CLOCK FORMAT AND OFFSET */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-indigo-400" /> Systems Time settings
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Configure shift register display format. Adjust UTC offset hours to align timezone timestamps.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Clock Format</label>
+                            <select 
+                              value={timeFormat}
+                              onChange={(e) => {
+                                const fmt = e.target.value as '12h' | '24h';
+                                setTimeFormat(fmt);
+                                localStorage.setItem('br_time_format', fmt);
+                              }}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-sans text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800 cursor-pointer"
+                            >
+                              <option value="12h">12-Hour AM/PM</option>
+                              <option value="24h">24-Hour Military</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-[10px] font-display uppercase tracking-wider text-zinc-500 font-semibold">Hour Shift Offset</label>
+                            <input 
+                              type="number" 
+                              value={timeOffsetHours}
+                              onChange={(e) => {
+                                const offset = parseInt(e.target.value) || 0;
+                                setTimeOffsetHours(offset);
+                                localStorage.setItem('br_time_offset', offset.toString());
+                              }}
+                              className="bg-zinc-950 border border-zinc-850 p-2.5 rounded-xl text-xs font-mono text-zinc-200 outline-none hover:border-zinc-800 transition focus:border-indigo-800"
+                              placeholder="e.g. 0"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-3 bg-zinc-950 border border-zinc-850 rounded-xl flex items-center justify-between font-mono text-[10px]">
+                          <span className="text-zinc-[500] font-display font-bold uppercase tracking-wider text-[8px]">Display Clock Preview:</span>
+                          <span className="text-indigo-400 font-semibold animate-pulse">{currentTime}</span>
+                        </div>
+                      </div>
+
+                      {/* CARD 8: LICENSE FEATURE MODULE GATE CONTROLS */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
+                        <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
+                          <h3 className="text-sm font-display font-black text-white uppercase tracking-wider flex items-center gap-2">
+                            <ToggleLeft className="w-4 h-4 text-indigo-400" /> Modular Subscribed Toggles
+                          </h3>
+                        </div>
+
+                        <p className="text-xs text-zinc-500 leading-relaxed font-display uppercase tracking-wide">
+                          Enable/disable core system modules. Gated features will be locked and hidden from both the cashier register and manager layouts.
+                        </p>
+
+                        <div className="flex flex-col gap-2">
+                          {[
+                            { key: 'inventory', name: 'Stock & Inventory Modules', desc: 'Hides/unhides Stock and delivery logistics' },
+                            { key: 'expenses', name: 'Branch Expenses Ledger', desc: 'Hides/unhides cash drawer expense logs' },
+                            { key: 'shifts', name: 'Shifts & Branches Logs', desc: 'Hides/unhides branch registrations' },
+                            { key: 'reports', name: 'Sales Revenue analytics', desc: 'Hides/unhides spreadsheets and financial charts' },
+                            { key: 'products', name: 'Products Menu Editor', desc: 'Hides/unhides managers product customizer' }
+                          ].map((gate) => {
+                            const isActive2 = enabledTabs[gate.key as keyof typeof enabledTabs];
+                            return (
+                              <div key={gate.key} className="flex items-center justify-between p-2 bg-zinc-950 border border-zinc-850 rounded-xl hover:border-zinc-800 transition">
+                                <div>
+                                  <span className="text-[10px] font-bold text-zinc-200 block uppercase tracking-wide leading-none">{gate.name}</span>
+                                  <span className="text-[8px] text-zinc-500 block uppercase font-sans mt-0.5">{gate.desc}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = { ...enabledTabs, [gate.key]: !isActive2 };
+                                    setEnabledTabs(next);
+                                    localStorage.setItem('br_enabled_tabs', JSON.stringify(next));
+                                    showNotification(`${isActive2 ? '🚫 Locked' : '✅ Unlocked'} Module: ${gate.name}`);
+                                    if (audioEnabled) playSound('click');
+                                  }}
+                                  className={`p-1 px-3.5 text-[8px] uppercase tracking-wide font-extrabold rounded-lg border transition ${
+                                    isActive2 
+                                      ? 'bg-indigo-950/40 text-indigo-400 border-indigo-900/40 hover:bg-indigo-900/20' 
+                                      : 'bg-zinc-900 text-zinc-500 border-zinc-850 hover:bg-zinc-800'
+                                  }`}
+                                >
+                                  {isActive2 ? 'ACTIVE' : 'LOCKED'}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
                       {/* CARD 4: CORE DIAGNOSTICS & SYSTEM RESET */}
                       <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex flex-col gap-4">
                         <div className="flex items-center justify-between border-b border-zinc-850 pb-3">
@@ -5089,6 +5732,82 @@ export default function BossRicePOS() {
                   <span className="text-[9px] text-zinc-650 uppercase tracking-widest leading-normal">
                     Typical beginning balance is ₱1,000.00 for change drawers.
                   </span>
+                </div>
+
+                {/* --- REGISTER TIMESTAMPS FOR ACCIDENTAL LOGOUT CACHE RECOVERY --- */}
+                <div className="border-t border-dashed border-zinc-800 pt-3 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500 flex items-center gap-1">
+                      🔁 Cache Shift Recovery Sync
+                    </span>
+                    <span className="bg-amber-950/50 border border-amber-900/40 px-1.5 py-0.5 rounded text-[8px] font-mono text-amber-400">
+                      {(() => {
+                        try {
+                          const archive = JSON.parse(localStorage.getItem('br_offline_order_archive_v1') || '[]');
+                          return `${archive.length} saved`;
+                        } catch (e) {
+                          return '0 cached';
+                        }
+                      })()}
+                    </span>
+                  </div>
+                  
+                  <p className="text-[9px] text-zinc-500 leading-normal uppercase">
+                    If you accidentally logged out while offline, select your work shift times below to re-upload cached orders.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[8px] font-bold uppercase tracking-widest text-zinc-600">
+                        Log-In Date/Time
+                      </label>
+                      <input 
+                        type="datetime-local"
+                        value={recoveryStart}
+                        onChange={(e) => setRecoveryStart(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800/80 p-2 rounded-lg text-[9px] font-mono text-zinc-300 outline-none hover:border-zinc-700 focus:border-amber-600 transition"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[8px] font-bold uppercase tracking-widest text-zinc-600">
+                        Log-Out Date/Time
+                      </label>
+                      <input 
+                        type="datetime-local"
+                        value={recoveryEnd}
+                        onChange={(e) => setRecoveryEnd(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800/80 p-2 rounded-lg text-[9px] font-mono text-zinc-300 outline-none hover:border-zinc-700 focus:border-amber-600 transition"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={restoreAndSyncOfflineReceipts}
+                    disabled={isRecovering}
+                    className={`w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition ${
+                      isRecovering 
+                        ? 'bg-zinc-800 text-zinc-600 border border-zinc-850 cursor-not-allowed' 
+                        : 'bg-amber-950/40 text-amber-400 border border-amber-900/40 hover:bg-amber-900/30'
+                    } flex items-center justify-center gap-1.5`}
+                  >
+                    {isRecovering ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full border border-t-transparent border-amber-400 animate-spin" />
+                        Recovering Cache...
+                      </>
+                    ) : (
+                      <>🔍 Restore & Re-upload Cached Orders</>
+                    )}
+                  </button>
+
+                  {recoveredCount !== null && (
+                    <div className="p-2 border border-emerald-950/20 bg-emerald-950/10 rounded-lg text-emerald-400 font-mono text-[9px] uppercase tracking-wide text-center">
+                      {recoveredCount > 0 
+                        ? `🎉 Sync Complete: Re-uploaded ${recoveredCount} orders!` 
+                        : '✅ Device data is up-to-date and synced!'}
+                    </div>
+                  )}
                 </div>
               </div>
 
